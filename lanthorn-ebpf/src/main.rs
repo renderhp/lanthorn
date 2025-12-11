@@ -4,6 +4,21 @@
 use aya_ebpf::{macros::kprobe, programs::ProbeContext};
 use aya_log_ebpf::info;
 
+#[repr(C)]
+#[allow(non_camel_case_types)]
+pub struct in_addr {
+    pub s_addr: u32,
+}
+
+#[repr(C)]
+#[allow(non_camel_case_types)]
+pub struct sockaddr_in {
+    pub sin_family: u16,
+    pub sin_port: u16,
+    pub sin_addr: in_addr,
+    pub sin_zero: [u8; 8],
+}
+
 #[kprobe]
 pub fn lanthorn(ctx: ProbeContext) -> u32 {
     match try_lanthorn(ctx) {
