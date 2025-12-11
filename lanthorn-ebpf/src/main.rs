@@ -1,7 +1,11 @@
 #![no_std]
 #![no_main]
 
-use aya_ebpf::{macros::kprobe, programs::ProbeContext};
+use aya_ebpf::{
+    helpers::{bpf_get_current_pid_tgid, bpf_probe_read_kernel},
+    macros::kprobe,
+    programs::ProbeContext,
+};
 use aya_log_ebpf::info;
 
 #[repr(C)]
@@ -28,7 +32,32 @@ pub fn lanthorn(ctx: ProbeContext) -> u32 {
 }
 
 fn try_lanthorn(ctx: ProbeContext) -> Result<u32, u32> {
-    info!(&ctx, "kprobe called");
+    let uaddr_ptr: *const sockaddr_in = ctx.arg(1).ok_or(1u32)?;
+    let sockaddr: sockaddr_in = unsafe {
+        match bpf_probe_read_kernel(uaddr_ptr) {
+            Ok(s) => s,
+            Err(_) => return Err(1),
+        }
+    };
+
+    let ip = sockaddr.sin_addr.s_addr;
+    let port = sockaddr.sin_port;
+    let ip_host = u32::from_be(ip);
+    let port_host = u16::from_be(port);
+
+    let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
+
+    info!(
+        &ctx,
+        "PID: {} -> CONNECT: {}.{}.{}.{}:{}",
+        pid,
+        (ip_host >> 24) & 0xFF,
+        (ip_host >> 16) & 0xFF,
+        (ip_host >> 8) & 0xFF,
+        ip_host & 0xFF,
+        port_host
+    );
+
     Ok(0)
 }
 
