@@ -32,11 +32,22 @@ pub fn lanthorn(ctx: ProbeContext) -> u32 {
 }
 
 fn try_lanthorn(ctx: ProbeContext) -> Result<u32, u32> {
-    let uaddr_ptr: *const sockaddr_in = ctx.arg(1).ok_or(1u32)?;
+    let uaddr_ptr: *const sockaddr_in = match ctx.arg(1) {
+        Some(ptr) => ptr,
+        None => {
+            info!(&ctx, "DEBUG: Failed to get arg(1)");
+            return Err(1);
+        }
+    };
+
     let sockaddr: sockaddr_in = unsafe {
         match bpf_probe_read_kernel(uaddr_ptr) {
             Ok(s) => s,
-            Err(_) => return Err(1),
+            Err(e) => {
+                // Log the actual error code from the kernel!
+                info!(&ctx, "DEBUG: Read kernel failed: {}", e);
+                return Err(1);
+            }
         }
     };
 
