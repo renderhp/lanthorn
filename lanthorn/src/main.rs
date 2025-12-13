@@ -5,6 +5,7 @@ use lanthorn_common::ConnectEvent;
 use log::{info, warn};
 
 mod ebpf_handler;
+mod utils;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
