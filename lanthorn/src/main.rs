@@ -1,12 +1,18 @@
 use aya::{maps::RingBuf, programs::KProbe};
 use aya_log::EbpfLogger;
+use clap::Parser;
 use lanthorn_common::ConnectEvent;
 use log::{info, warn};
 
 mod ebpf_handler;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    let _args = Args::parse();
     env_logger::init();
 
     let mut bpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
