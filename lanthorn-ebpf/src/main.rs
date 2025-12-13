@@ -87,11 +87,6 @@ fn try_kprobetcp(ctx: ProbeContext) -> Result<u32, i64> {
             _ => {} // Should be unreachable due to check above
         }
 
-        info!(
-            &ctx,
-            "CONNECTION! pid: {}, cgroup_id: {}, port: {}", event.pid, event.cgroup_id, event.port
-        );
-
         // Submit to userspace - no error paths after reserve, so always submit
         ring_entry.submit(0);
     }
