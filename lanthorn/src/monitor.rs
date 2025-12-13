@@ -37,7 +37,6 @@ pub async fn run_monitor() -> Result<(), anyhow::Error> {
     let mut ring_buf_poll = AsyncFd::new(ring_buf).unwrap();
     info!("Waiting for events...");
 
-    // Keep bpf alive and run event loop directly (non-blocking with tokio::time::sleep)
     loop {
         let mut guard = ring_buf_poll.readable_mut().await?;
 
