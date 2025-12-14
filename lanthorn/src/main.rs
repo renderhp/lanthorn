@@ -1,7 +1,7 @@
 use tokio::sync::RwLock;
 
 use clap::Parser;
-use log::info;
+use log::{error, info};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -33,11 +33,21 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let cache: DockerCache = Arc::new(RwLock::new(HashMap::new()));
     if !args.disable_docker_mon {
-        monitor::run_docker_monitor(cache.clone()).await?;
+        let cache_for_docker = Arc::clone(&cache);
+        tokio::spawn(async move {
+            if let Err(e) = monitor::run_docker_monitor(cache_for_docker).await {
+                error!("Docker monitor failed: {}", e);
+            }
+        });
     }
 
     if !args.disable_tcp_mon {
-        monitor::run_tcp_monitor(cache.clone()).await?;
+        let cache_for_bpf = Arc::clone(&cache);
+        tokio::spawn(async move {
+            if let Err(e) = monitor::run_tcp_monitor(cache_for_bpf).await {
+                error!("TCP Monitor failed: {}", e);
+            };
+        });
     }
 
     info!("All components initialised. Press Ctrl+C to exit.");

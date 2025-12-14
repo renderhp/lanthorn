@@ -39,24 +39,16 @@ pub async fn run_tcp_monitor(docker_cache: DockerCache) -> Result<(), anyhow::Er
     let mut ring_buf_poll = AsyncFd::new(ring_buf).unwrap();
     info!("Waiting for events...");
 
-    tokio::spawn(async move {
-        // Without the line below bpf gets dropped and no events are being registered
-        let _keep_bpf_alive = bpf;
+    loop {
+        let mut guard = ring_buf_poll.readable_mut().await.unwrap();
 
-        loop {
-            let mut guard = ring_buf_poll.readable_mut().await.unwrap();
-
-            while let Some(item) = guard.get_inner_mut().next() {
-                let event =
-                    unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ConnectEvent) };
-                handle_event(event, docker_cache.clone()).await;
-            }
-
-            guard.clear_ready();
+        while let Some(item) = guard.get_inner_mut().next() {
+            let event = unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ConnectEvent) };
+            handle_event(event, docker_cache.clone()).await;
         }
-    });
 
-    Ok(())
+        guard.clear_ready();
+    }
 }
 
 async fn handle_event(event: ConnectEvent, docker_cache: DockerCache) {
