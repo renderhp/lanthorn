@@ -7,6 +7,8 @@ use tokio::io::unix::AsyncFd;
 use crate::utils::ip_to_string;
 
 pub async fn run_monitor() -> Result<(), anyhow::Error> {
+    info!("Starting TCP connection monitor...");
+
     let mut bpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/lanthorn"
@@ -37,16 +39,24 @@ pub async fn run_monitor() -> Result<(), anyhow::Error> {
     let mut ring_buf_poll = AsyncFd::new(ring_buf).unwrap();
     info!("Waiting for events...");
 
-    loop {
-        let mut guard = ring_buf_poll.readable_mut().await?;
+    tokio::spawn(async move {
+        // Without the line below bpf gets dropped and no events are being registered
+        let _keep_bpf_alive = bpf;
 
-        while let Some(item) = guard.get_inner_mut().next() {
-            let event = unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ConnectEvent) };
-            handle_event(event).await;
+        loop {
+            let mut guard = ring_buf_poll.readable_mut().await.unwrap();
+
+            while let Some(item) = guard.get_inner_mut().next() {
+                let event =
+                    unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ConnectEvent) };
+                handle_event(event).await;
+            }
+
+            guard.clear_ready();
         }
+    });
 
-        guard.clear_ready();
-    }
+    Ok(())
 }
 
 async fn handle_event(event: ConnectEvent) {

@@ -2,6 +2,7 @@ use clap::Parser;
 use log::info;
 
 mod monitor;
+mod storage;
 mod utils;
 
 #[derive(Parser, Debug)]
@@ -13,10 +14,12 @@ async fn main() -> Result<(), anyhow::Error> {
     let _args = Args::parse();
     env_logger::init();
 
-    info!("Starting TCP connection monitor...");
+    info!("Starting initialisation");
+
+    storage::init().await;
     monitor::run_monitor().await?;
 
-    info!("Monitor running. Press Ctrl+C to exit.");
+    info!("All components initialised. Press Ctrl+C to exit.");
 
     // Wait for Ctrl+C signal
     tokio::signal::ctrl_c().await?;
