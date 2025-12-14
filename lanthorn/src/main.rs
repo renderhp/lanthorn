@@ -22,7 +22,7 @@ async fn main() -> Result<(), anyhow::Error> {
     storage::init().await?;
 
     if !args.disable_tcp {
-        monitor::run_monitor().await?;
+        monitor::run_tcp_monitor().await?;
     }
 
     info!("All components initialised. Press Ctrl+C to exit.");
