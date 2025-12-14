@@ -10,7 +10,11 @@ mod utils;
 struct Args {
     /// Disable TCP connection tracking through eBPF kprobe on tcp_connect
     #[arg(long, default_value_t = false)]
-    disable_tcp: bool,
+    disable_tcp_mon: bool,
+
+    /// Disable docker container monitoring
+    #[arg(long, default_value_t = false)]
+    disable_docker_mon: bool,
 }
 
 #[tokio::main]
@@ -21,7 +25,11 @@ async fn main() -> Result<(), anyhow::Error> {
 
     storage::init().await?;
 
-    if !args.disable_tcp {
+    if !args.disable_docker_mon {
+        monitor::run_docker_monitor().await?;
+    }
+
+    if !args.disable_tcp_mon {
         monitor::run_tcp_monitor().await?;
     }
 
