@@ -1,9 +1,15 @@
+use tokio::sync::RwLock;
+
 use clap::Parser;
 use log::info;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 mod monitor;
 mod storage;
 mod utils;
+
+use monitor::DockerCache;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -25,12 +31,13 @@ async fn main() -> Result<(), anyhow::Error> {
 
     storage::init().await?;
 
+    let cache: DockerCache = Arc::new(RwLock::new(HashMap::new()));
     if !args.disable_docker_mon {
-        monitor::run_docker_monitor().await?;
+        monitor::run_docker_monitor(cache.clone()).await?;
     }
 
     if !args.disable_tcp_mon {
-        monitor::run_tcp_monitor().await?;
+        monitor::run_tcp_monitor(cache.clone()).await?;
     }
 
     info!("All components initialised. Press Ctrl+C to exit.");

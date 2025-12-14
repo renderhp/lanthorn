@@ -1,17 +1,20 @@
 use bollard::{Docker, query_parameters::ListContainersOptions, secret::ContainerSummary};
 use log::{error, info};
-use std::{collections::HashMap, os::unix::fs::MetadataExt};
+use std::{collections::HashMap, os::unix::fs::MetadataExt, sync::Arc};
+use tokio::sync::RwLock;
+
+pub type DockerCache = Arc<RwLock<HashMap<u64, MonitoredContainer>>>;
 
 #[derive(Debug)]
-struct MonitoredContainer {
-    id: String,
-    names: Option<Vec<String>>,
-    image: Option<String>,
-    pid: i64,
-    cgroup_id: u64,
+pub struct MonitoredContainer {
+    pub id: String,
+    pub names: Option<Vec<String>>,
+    pub image: Option<String>,
+    pub pid: i64,
+    pub cgroup_id: u64,
 }
 
-pub async fn run_docker_monitor() -> Result<(), anyhow::Error> {
+pub async fn run_docker_monitor(cache: DockerCache) -> Result<(), anyhow::Error> {
     info!("Starting Docker monitor...");
     let docker = Docker::connect_with_socket_defaults()?;
     let options = Some(ListContainersOptions {
@@ -22,11 +25,10 @@ pub async fn run_docker_monitor() -> Result<(), anyhow::Error> {
     });
     let running_containers = docker.list_containers(options).await?;
 
-    let mut docker_state: HashMap<String, MonitoredContainer> = HashMap::new();
-
     for container in running_containers {
         if let Some(item) = get_monitored_container(&docker, &container).await {
-            docker_state.insert(item.id.clone(), item);
+            let mut state = cache.write().await;
+            state.insert(item.cgroup_id, item);
         } else {
             error!(
                 "Failed to insert container with ID {:?} to cache",
@@ -35,7 +37,8 @@ pub async fn run_docker_monitor() -> Result<(), anyhow::Error> {
         }
     }
 
-    println!("Existing Containers:\n{:#?}", docker_state);
+    let state = cache.read().await;
+    println!("Existing Containers:\n{:#?}", state);
     Ok(())
 }
 

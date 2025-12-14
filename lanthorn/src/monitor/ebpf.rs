@@ -4,9 +4,9 @@ use lanthorn_common::ConnectEvent;
 use log::{info, warn};
 use tokio::io::unix::AsyncFd;
 
-use crate::utils::ip_to_string;
+use crate::{monitor::DockerCache, utils::ip_to_string};
 
-pub async fn run_tcp_monitor() -> Result<(), anyhow::Error> {
+pub async fn run_tcp_monitor(docker_cache: DockerCache) -> Result<(), anyhow::Error> {
     info!("Starting TCP connection monitor...");
 
     let mut bpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
@@ -49,7 +49,7 @@ pub async fn run_tcp_monitor() -> Result<(), anyhow::Error> {
             while let Some(item) = guard.get_inner_mut().next() {
                 let event =
                     unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ConnectEvent) };
-                handle_event(event).await;
+                handle_event(event, docker_cache.clone()).await;
             }
 
             guard.clear_ready();
@@ -59,13 +59,20 @@ pub async fn run_tcp_monitor() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-async fn handle_event(event: ConnectEvent) {
+async fn handle_event(event: ConnectEvent, docker_cache: DockerCache) {
     info!(
         "Connection: PID={}, Port={}, Family={}, CGroup={}",
         event.pid, event.port, event.family, event.cgroup_id
     );
 
     if let Some(ip_string) = ip_to_string(event.family, event.ip) {
-        info!("{}", ip_string);
+        info!("  {}", ip_string);
+    }
+
+    if let Some(docker_info) = docker_cache.read().await.get(&event.cgroup_id) {
+        info!(
+            "  Container Names: {:?}, Image: {:?}, PID: {}, ID: {}",
+            docker_info.names, docker_info.image, docker_info.pid, docker_info.id
+        );
     }
 }
