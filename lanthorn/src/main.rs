@@ -16,7 +16,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     info!("Starting initialisation");
 
-    storage::init().await;
+    storage::init().await?;
     monitor::run_monitor().await?;
 
     info!("All components initialised. Press Ctrl+C to exit.");
