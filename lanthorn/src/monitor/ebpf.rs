@@ -2,11 +2,15 @@ use aya::{Ebpf, maps::RingBuf, programs::KProbe};
 use aya_log::EbpfLogger;
 use lanthorn_common::ConnectEvent;
 use log::{info, warn};
+use sqlx::SqlitePool;
 use tokio::io::unix::AsyncFd;
 
-use crate::{monitor::DockerCache, utils::ip_to_string};
+use crate::{monitor::DockerCache, storage, utils::ip_to_string};
 
-pub async fn run_tcp_monitor(docker_cache: DockerCache) -> Result<(), anyhow::Error> {
+pub async fn run_tcp_monitor(
+    pool: SqlitePool,
+    docker_cache: DockerCache,
+) -> Result<(), anyhow::Error> {
     info!("Starting TCP connection monitor...");
 
     let mut bpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
@@ -44,27 +48,56 @@ pub async fn run_tcp_monitor(docker_cache: DockerCache) -> Result<(), anyhow::Er
 
         while let Some(item) = guard.get_inner_mut().next() {
             let event = unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ConnectEvent) };
-            handle_event(event, docker_cache.clone()).await;
+            handle_event(pool.clone(), event, docker_cache.clone()).await;
         }
 
         guard.clear_ready();
     }
 }
 
-async fn handle_event(event: ConnectEvent, docker_cache: DockerCache) {
+async fn handle_event(pool: SqlitePool, event: ConnectEvent, docker_cache: DockerCache) {
     info!(
         "Connection: PID={}, Port={}, Family={}, CGroup={}",
         event.pid, event.port, event.family, event.cgroup_id
     );
 
-    if let Some(ip_string) = ip_to_string(event.family, event.ip) {
-        info!("  {}", ip_string);
+    let ip_string = ip_to_string(event.family, event.ip);
+    if let Some(ref ip) = ip_string {
+        info!("  {}", ip);
     }
 
-    if let Some(docker_info) = docker_cache.read().await.get(&event.cgroup_id) {
+    let docker_info = docker_cache.read().await.get(&event.cgroup_id).cloned();
+    if let Some(info) = &docker_info {
         info!(
             "  Container Names: {:?}, Image: {:?}, PID: {}, ID: {}",
-            docker_info.names, docker_info.image, docker_info.pid, docker_info.id
+            info.names, info.image, info.pid, info.id
         );
     }
+
+    // Now use them - ip_string and docker_info are both Option<T>
+    let Some(ip) = ip_string else {
+        warn!("Could not parse IP, skipping event");
+        return;
+    };
+
+    let container_name = docker_info
+        .as_ref()
+        .and_then(|d| d.names.clone())
+        .and_then(|v| v.first().cloned());
+    let container_id = docker_info.as_ref().map(|d| d.id.clone());
+    let image_name = docker_info.as_ref().and_then(|d| d.image.clone());
+
+    let _ = storage::insert_event(
+        &pool,
+        "tcp_connect",
+        "tcp",
+        &ip,
+        event.port,
+        event.pid,
+        Some(event.cgroup_id),
+        container_id,
+        container_name,
+        image_name,
+    )
+    .await;
 }

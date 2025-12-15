@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 
 pub type DockerCache = Arc<RwLock<HashMap<u64, MonitoredContainer>>>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MonitoredContainer {
     pub id: String,
     pub names: Option<Vec<String>>,

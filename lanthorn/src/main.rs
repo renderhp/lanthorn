@@ -21,6 +21,10 @@ struct Args {
     /// Disable docker container monitoring
     #[arg(long, default_value_t = false)]
     disable_docker_mon: bool,
+
+    /// Path to the sqlite DB file. Default is lanthorn.db
+    #[arg(long, default_value = "lanthorn.db")]
+    db_path: String,
 }
 
 #[tokio::main]
@@ -29,7 +33,7 @@ async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
     info!("Starting initialisation");
 
-    storage::init().await?;
+    let pool = storage::init(&args.db_path).await?;
 
     let cache: DockerCache = Arc::new(RwLock::new(HashMap::new()));
     if !args.disable_docker_mon {
@@ -44,7 +48,7 @@ async fn main() -> Result<(), anyhow::Error> {
     if !args.disable_tcp_mon {
         let cache_for_bpf = Arc::clone(&cache);
         tokio::spawn(async move {
-            if let Err(e) = monitor::run_tcp_monitor(cache_for_bpf).await {
+            if let Err(e) = monitor::run_tcp_monitor(pool, cache_for_bpf).await {
                 error!("TCP Monitor failed: {}", e);
             };
         });
