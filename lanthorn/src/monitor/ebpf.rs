@@ -1,15 +1,18 @@
-use aya::{Ebpf, maps::RingBuf, programs::KProbe};
+use aya::{maps::RingBuf, programs::KProbe, Ebpf};
 use aya_log::EbpfLogger;
 use lanthorn_common::ConnectEvent;
 use log::{info, warn};
 use sqlx::SqlitePool;
 use tokio::io::unix::AsyncFd;
 
+use crate::monitor::dns_cache::{resolve_domain_for_connection, DnsCache, PendingDnsCache};
 use crate::{monitor::DockerCache, storage, utils::ip_to_string};
 
 pub async fn run_tcp_monitor(
     pool: SqlitePool,
     docker_cache: DockerCache,
+    dns_cache: DnsCache,
+    pending_dns_cache: PendingDnsCache,
 ) -> Result<(), anyhow::Error> {
     info!("Starting TCP connection monitor...");
 
@@ -48,21 +51,59 @@ pub async fn run_tcp_monitor(
 
         while let Some(item) = guard.get_inner_mut().next() {
             let event = unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ConnectEvent) };
-            handle_event(pool.clone(), event, docker_cache.clone()).await;
+            handle_event(
+                pool.clone(),
+                event,
+                docker_cache.clone(),
+                dns_cache.clone(),
+                pending_dns_cache.clone(),
+            )
+            .await;
         }
 
         guard.clear_ready();
     }
 }
 
-async fn handle_event(pool: SqlitePool, event: ConnectEvent, docker_cache: DockerCache) {
+async fn handle_event(
+    pool: SqlitePool,
+    event: ConnectEvent,
+    docker_cache: DockerCache,
+    dns_cache: DnsCache,
+    pending_dns_cache: PendingDnsCache,
+) {
     info!(
         "Connection: PID={}, Port={}, Family={}, CGroup={}",
         event.pid, event.port, event.family, event.cgroup_id
     );
 
     let ip_string = ip_to_string(event.family, event.ip);
-    if let Some(ref ip) = ip_string {
+    let Some(ip) = ip_string else {
+        warn!("Could not parse IP, skipping event");
+        return;
+    };
+
+    // Parse IP address for DNS lookup
+    let ip_addr: Option<std::net::IpAddr> = ip.parse().ok();
+
+    // Look up domain name in DNS cache using the timestamp from eBPF event
+    let domain_name = if let Some(addr) = ip_addr {
+        resolve_domain_for_connection(
+            &pending_dns_cache,
+            &dns_cache,
+            event.pid,
+            &addr,
+            event.timestamp_ns,
+            300, // 5 minute TTL
+        )
+        .await
+    } else {
+        None
+    };
+
+    if let Some(ref domain) = domain_name {
+        info!("  {} ({})", ip, domain);
+    } else {
         info!("  {}", ip);
     }
 
@@ -73,12 +114,6 @@ async fn handle_event(pool: SqlitePool, event: ConnectEvent, docker_cache: Docke
             info.names, info.image, info.pid, info.id
         );
     }
-
-    // Now use them - ip_string and docker_info are both Option<T>
-    let Some(ip) = ip_string else {
-        warn!("Could not parse IP, skipping event");
-        return;
-    };
 
     let container_name = docker_info
         .as_ref()
@@ -98,6 +133,7 @@ async fn handle_event(pool: SqlitePool, event: ConnectEvent, docker_cache: Docke
         container_id,
         container_name,
         image_name,
+        domain_name,
     )
     .await;
 }

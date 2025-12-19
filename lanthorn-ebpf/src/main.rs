@@ -18,18 +18,22 @@ use crate::vmlinux::{sock, sock_common};
 
 use aya_ebpf::{
     helpers::{
-        bpf_get_current_pid_tgid, bpf_probe_read_kernel, generated::bpf_get_current_cgroup_id,
+        bpf_get_current_pid_tgid, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes,
+        generated::{bpf_get_current_cgroup_id, bpf_ktime_get_ns},
     },
-    macros::{kprobe, map},
+    macros::{kprobe, map, uprobe},
     maps::RingBuf,
     programs::ProbeContext,
 };
 use aya_log_ebpf::info;
 
-use lanthorn_common::ConnectEvent;
+use lanthorn_common::{ConnectEvent, DnsEvent};
 
 #[map]
 static mut EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+
+#[map]
+static mut DNS_EVENTS: RingBuf = RingBuf::with_byte_size(128 * 1024, 0);
 
 const AF_INET: u16 = 2;
 const AF_INET6: u16 = 10;
@@ -69,6 +73,7 @@ fn try_kprobetcp(ctx: ProbeContext) -> Result<u32, i64> {
         let pid_tgid = bpf_get_current_pid_tgid();
         event.pid = (pid_tgid >> 32) as u32;
         event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+        event.timestamp_ns = unsafe { bpf_ktime_get_ns() };
         event.family = family;
         event.port = u16::from_be(dport);
 
@@ -90,6 +95,58 @@ fn try_kprobetcp(ctx: ProbeContext) -> Result<u32, i64> {
 
         // Submit to userspace - no error paths after reserve, so always submit
         ring_entry.submit(0);
+    }
+
+    Ok(0)
+}
+
+#[uprobe]
+pub fn getaddrinfo_entry(ctx: ProbeContext) -> u32 {
+    match try_getaddrinfo_entry(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret.try_into().unwrap_or(1),
+    }
+}
+
+fn try_getaddrinfo_entry(ctx: ProbeContext) -> Result<u32, i64> {
+    // getaddrinfo signature: int getaddrinfo(const char *node, ...)
+    // First argument is domain name (const char*)
+    let node_ptr: *const u8 = ctx.arg(0).ok_or(1i64)?;
+
+    // Skip if node is NULL (happens when only service/port is provided)
+    if node_ptr.is_null() {
+        return Ok(0);
+    }
+
+    if let Some(mut ring_entry) = unsafe {
+        let ptr = core::ptr::addr_of_mut!(DNS_EVENTS);
+        (*ptr).reserve::<DnsEvent>(0)
+    } {
+        let event = unsafe { &mut *ring_entry.as_mut_ptr() };
+
+        // Fill metadata first
+        let pid_tgid = bpf_get_current_pid_tgid();
+        event.pid = (pid_tgid >> 32) as u32;
+        event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+        event.timestamp_ns = unsafe { bpf_ktime_get_ns() };
+
+        // Read domain name from userspace (this also zero-initializes the buffer)
+        let bytes_read = unsafe {
+            bpf_probe_read_user_str_bytes(node_ptr as *const u8, &mut event.domain)
+        };
+
+        match bytes_read {
+            Ok(buf) => {
+                // buf.len() already excludes the null terminator
+                event.domain_len = buf.len() as u16;
+                info!(&ctx, "DNS query: pid={}, domain_len={}", event.pid, event.domain_len);
+                ring_entry.submit(0);
+            }
+            Err(_) => {
+                // Failed to read domain, discard the ring entry
+                ring_entry.discard(0);
+            }
+        }
     }
 
     Ok(0)
