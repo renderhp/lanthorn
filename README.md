@@ -1,34 +1,88 @@
-# lanthorn
+# Lanthorn
 
-## Prerequisites
+A lightweight network monitoring tool that tracks TCP connections and correlates them with Docker containers. Lanthorn uses eBPF (Extended Berkeley Packet Filter) to efficiently capture network activity at the kernel level without impacting system performance.
 
-1. stable rust toolchains: `rustup toolchain install stable`
-1. nightly rust toolchains: `rustup toolchain install nightly --component rust-src`
-1. (if cross-compiling) rustup target: `rustup target add ${ARCH}-unknown-linux-musl`
-1. (if cross-compiling) LLVM: (e.g.) `brew install llvm` (on macOS)
-1. (if cross-compiling) C toolchain: (e.g.) [`brew install filosottile/musl-cross/musl-cross`](https://github.com/FiloSottile/homebrew-musl-cross) (on macOS)
-1. bpf-linker: `cargo install bpf-linker` (`--no-default-features` on macOS)
+## What does it do?
 
-## Build & Run
+Lanthorn monitors all TCP connections on your Linux system and automatically identifies which Docker containers are making those connections. All events are stored in a SQLite database for analysis and auditing.
 
-Use `cargo build`, `cargo check`, etc. as normal. Run your program with:
+**Key Features:**
+- Real-time TCP connection monitoring using eBPF
+- Automatic correlation with Docker containers
+- Low overhead kernel-level tracking
+- SQLite database for event storage and queries
+- Captures connection metadata: destination IP, port, process ID, container info
 
-```shell
+## Quick Start
+
+### Prerequisites
+
+- Linux system (eBPF requires Linux kernel)
+- Rust toolchains: `rustup toolchain install stable nightly --component rust-src`
+- bpf-linker: `cargo install bpf-linker`
+- Docker (optional, for container correlation)
+- Sudo privileges (required for eBPF)
+
+### Running
+
+```bash
+# Build and run with logging
 RUST_LOG=info cargo run --release
 ```
 
-Cargo build scripts are used to automatically build the eBPF correctly and include it in the
-program.
+The program will:
+1. Start monitoring TCP connections via eBPF
+2. Scan running Docker containers
+3. Store connection events to `lanthorn.db` (SQLite)
+4. Run until you press Ctrl+C
 
-## Cross-compiling on macOS
+### Command Line Options
 
-Cross compilation should work on both Intel and Apple Silicon Macs.
+```bash
+# Use a custom database path
+cargo run --release -- --db-path /path/to/custom.db
 
-```shell
-CC=${ARCH}-linux-musl-gcc cargo build --package lanthorn --release \
-  --target=${ARCH}-unknown-linux-musl \
-  --config=target.${ARCH}-unknown-linux-musl.linker=\"${ARCH}-linux-musl-gcc\"
+# Disable TCP monitoring
+cargo run --release -- --disable-tcp-mon
+
+# Disable Docker monitoring
+cargo run --release -- --disable-docker-mon
 ```
-The cross-compiled program `target/${ARCH}-unknown-linux-musl/release/lanthorn` can be
-copied to a Linux server or VM and run there.
+
+## Building
+
+```bash
+# Development build
+cargo build
+
+# Release build (recommended)
+cargo build --release
+
+# Run tests
+cargo test
+```
+
+## Cross-Compiling from macOS
+
+If you're developing on macOS but need to run on Linux:
+
+1. Install cross-compilation tools:
+   ```bash
+   rustup target add x86_64-unknown-linux-musl  # or aarch64-unknown-linux-musl
+   brew install llvm filosottile/musl-cross/musl-cross
+   cargo install bpf-linker --no-default-features
+   ```
+
+2. Build for Linux:
+   ```bash
+   CC=x86_64-linux-musl-gcc cargo build --package lanthorn --release \
+     --target=x86_64-unknown-linux-musl \
+     --config=target.x86_64-unknown-linux-musl.linker=\"x86_64-linux-musl-gcc\"
+   ```
+
+3. Copy `target/x86_64-unknown-linux-musl/release/lanthorn` to your Linux system
+
+## License
+
+Licensed under MIT OR Apache-2.0
 
