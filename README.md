@@ -4,14 +4,15 @@ A lightweight network monitoring tool that tracks TCP connections and correlates
 
 ## What does it do?
 
-Lanthorn monitors all TCP connections on your Linux system and automatically identifies which Docker containers are making those connections. All events are stored in a SQLite database for analysis and auditing.
+Lanthorn monitors all TCP connections on your Linux system and automatically identifies which Docker containers are making those connections. It also tracks DNS resolutions to enrich connection events with domain names. All events are stored in a SQLite database for analysis and auditing.
 
 **Key Features:**
 - Real-time TCP connection monitoring using eBPF
+- DNS resolution tracking to map IPs to domain names
 - Automatic correlation with Docker containers
 - Low overhead kernel-level tracking
 - SQLite database for event storage and queries
-- Captures connection metadata: destination IP, port, process ID, container info
+- Captures connection metadata: destination IP, port, domain name, process ID, container info
 
 ## Quick Start
 
@@ -32,9 +33,10 @@ RUST_LOG=info cargo run --release
 
 The program will:
 1. Start monitoring TCP connections via eBPF
-2. Scan running Docker containers
-3. Store connection events to `lanthorn.db` (SQLite)
-4. Run until you press Ctrl+C
+2. Track DNS resolutions to correlate IPs with domain names
+3. Scan running Docker containers
+4. Store enriched connection events to `lanthorn.db` (SQLite)
+5. Run until you press Ctrl+C
 
 ### Command Line Options
 
@@ -44,6 +46,9 @@ cargo run --release -- --db-path /path/to/custom.db
 
 # Disable TCP monitoring
 cargo run --release -- --disable-tcp-mon
+
+# Disable DNS resolution tracking
+cargo run --release -- --disable-dns-mon
 
 # Disable Docker monitoring
 cargo run --release -- --disable-docker-mon
