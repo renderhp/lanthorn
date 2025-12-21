@@ -1,0 +1,123 @@
+name: Nightly Build
+
+on:
+  schedule:
+    # Run at midnight UTC every day
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact_name: lanthorn-x86_64-linux
+          - target: aarch64-unknown-linux-gnu
+            artifact_name: lanthorn-aarch64-linux
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchains
+        run: |
+          rustup toolchain install stable nightly --component rust-src
+          rustup target add ${{ matrix.target }}
+
+      - name: Install bpf-linker
+        run: cargo install bpf-linker
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+          fi
+          cargo build --package lanthorn --release --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/lanthorn dist/${{ matrix.artifact_name }}
+          chmod +x dist/${{ matrix.artifact_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+
+  release:
+    name: Create Nightly Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Generate release notes
+        run: |
+          echo "## Nightly Build" > RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "**Built from:** \`$(git rev-parse --short HEAD)\` on \`$(date -u +'%Y-%m-%d %H:%M UTC')\`" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "### Downloads" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "| Platform | Binary |" >> RELEASE_NOTES.md
+          echo "|----------|--------|" >> RELEASE_NOTES.md
+          echo "| Linux x86_64 | \`lanthorn-x86_64-linux\` |" >> RELEASE_NOTES.md
+          echo "| Linux aarch64 | \`lanthorn-aarch64-linux\` |" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "### Usage" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "\`\`\`bash" >> RELEASE_NOTES.md
+          echo "# Download and run (requires sudo for eBPF)" >> RELEASE_NOTES.md
+          echo "chmod +x lanthorn-x86_64-linux" >> RELEASE_NOTES.md
+          echo "sudo RUST_LOG=info ./lanthorn-x86_64-linux" >> RELEASE_NOTES.md
+          echo "\`\`\`" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "---" >> RELEASE_NOTES.md
+          echo "*This is an automated nightly build. It may be unstable.*" >> RELEASE_NOTES.md
+
+      - name: Delete existing nightly release
+        run: gh release delete nightly --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create nightly release
+        run: |
+          gh release create nightly \
+            --title "Nightly Build ($(date -u +'%Y-%m-%d'))" \
+            --notes-file RELEASE_NOTES.md \
+            --prerelease \
+            release/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
