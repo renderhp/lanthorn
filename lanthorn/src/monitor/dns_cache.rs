@@ -8,19 +8,11 @@ use std::{
 use tokio::sync::RwLock;
 
 pub type DnsCache = Arc<RwLock<HashMap<IpAddr, DnsCacheEntry>>>;
-pub type PendingDnsCache = Arc<RwLock<HashMap<u32, Vec<PendingDnsQuery>>>>;
 
 #[derive(Debug, Clone)]
 pub struct DnsCacheEntry {
     pub domain: String,
     pub timestamp_ns: u64, // When this was resolved (from eBPF event)
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingDnsQuery {
-    pub domain: String,
-    pub timestamp_ns: u64,
-    pub _cgroup_id: u64, // Reserved for future use
 }
 
 impl DnsCacheEntry {
@@ -65,70 +57,6 @@ pub async fn evict_expired(cache: &DnsCache, ttl_secs: u64) -> usize {
     cache_lock.retain(|_ip, entry| !entry.is_expired(ttl_secs));
 
     initial_len - cache_lock.len()
-}
-
-/// Resolve domain for a TCP connection using pending DNS queries
-pub async fn resolve_domain_for_connection(
-    pending_cache: &PendingDnsCache,
-    dns_cache: &DnsCache,
-    pid: u32,
-    ip: &IpAddr,
-    timestamp_ns: u64,
-    ttl_secs: u64,
-) -> Option<String> {
-    use log::debug;
-
-    // First check if we already have IP -> domain mapping
-    if let Some(domain) = lookup_domain(dns_cache, ip, ttl_secs).await {
-        debug!("Found domain in DNS cache: {} -> {}", ip, domain);
-        return Some(domain);
-    }
-
-    // Check pending DNS queries for this PID
-    let cache = pending_cache.read().await;
-    if let Some(queries) = cache.get(&pid) {
-        debug!(
-            "Found {} pending DNS queries for PID {}",
-            queries.len(),
-            pid
-        );
-
-        // Find most recent query (within 30 seconds before TCP connection)
-        let cutoff = timestamp_ns.saturating_sub(30_000_000_000);
-
-        if let Some(query) = queries
-            .iter()
-            .filter(|q| q.timestamp_ns > cutoff && q.timestamp_ns <= timestamp_ns)
-            .max_by_key(|q| q.timestamp_ns)
-        {
-            let domain = query.domain.clone();
-            debug!(
-                "Correlating IP {} with domain {} for PID {}",
-                ip, domain, pid
-            );
-
-            // Cache this mapping for future use
-            let entry = DnsCacheEntry {
-                domain: domain.clone(),
-                timestamp_ns: query.timestamp_ns,
-            };
-
-            // Spawn async task to insert (don't block on write lock)
-            let dns_cache_clone = dns_cache.clone();
-            let ip_clone = *ip;
-            tokio::spawn(async move {
-                insert_mapping(&dns_cache_clone, ip_clone, entry).await;
-            });
-
-            return Some(domain);
-        } else {
-            debug!("No matching DNS queries in time window for PID {}", pid);
-        }
-    } else {
-        debug!("No pending DNS queries found for PID {}", pid);
-    }
-
-    None
 }
 
 #[cfg(test)]
