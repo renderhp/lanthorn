@@ -1,5 +1,7 @@
 # Lanthorn
 
+[![CI](https://github.com/renderhp/lanthorn/actions/workflows/ci.yml/badge.svg)](https://github.com/renderhp/lanthorn/actions/workflows/ci.yml)
+
 A lightweight network monitoring tool that tracks TCP connections and correlates them with Docker containers. Lanthorn uses eBPF (Extended Berkeley Packet Filter) to efficiently capture network activity at the kernel level without impacting system performance.
 
 ## What does it do?
