@@ -1,4 +1,7 @@
+use std::fs;
+use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::path::PathBuf;
 
 pub fn ip_to_string(family: u16, ip: [u8; 16]) -> Option<String> {
     match family {
@@ -15,9 +18,55 @@ pub fn ip_to_string(family: u16, ip: [u8; 16]) -> Option<String> {
     }
 }
 
+/// Reads the process name from /proc/{pid}/comm
+pub fn get_process_name(pid: u32) -> io::Result<String> {
+    let path = PathBuf::from(format!("/proc/{}/comm", pid));
+    let content = fs::read_to_string(path)?;
+    Ok(content.trim().to_string())
+}
+
+/// Reads the command line from /proc/{pid}/cmdline
+/// Arguments are separated by null bytes, so we replace them with spaces
+pub fn get_process_cmdline(pid: u32) -> io::Result<String> {
+    let path = PathBuf::from(format!("/proc/{}/cmdline", pid));
+    let content = fs::read(path)?;
+
+    // /proc/{pid}/cmdline contains arguments separated by null bytes
+    // We'll replace null bytes with spaces to get a readable string
+    let cmdline = content
+        .split(|&b| b == 0)
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| String::from_utf8_lossy(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    Ok(cmdline)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process;
+
+    #[test]
+    fn test_get_process_name_current() {
+        // This test might be flaky depending on how cargo test runs, but usually it should match "lanthorn" or "process"
+        // or whatever the test runner process is named.
+        // But simpler check: just ensure it doesn't fail for current PID
+        let pid = process::id();
+        let name = get_process_name(pid);
+        assert!(name.is_ok());
+        assert!(!name.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_process_cmdline_current() {
+        let pid = process::id();
+        let cmdline = get_process_cmdline(pid);
+        assert!(cmdline.is_ok());
+        // The cmdline should contain "cargo" or the test binary name
+        assert!(!cmdline.unwrap().is_empty());
+    }
 
     #[test]
     fn test_ip_to_string() {
