@@ -20,7 +20,7 @@ pub struct DnsCacheEntry {
 pub struct PendingDnsQuery {
     pub domain: String,
     pub timestamp_ns: u64,
-    pub cgroup_id: u64,
+    pub _cgroup_id: u64, // Reserved for future use
 }
 
 impl DnsCacheEntry {
@@ -42,10 +42,10 @@ impl DnsCacheEntry {
 pub async fn lookup_domain(cache: &DnsCache, ip: &IpAddr, ttl_secs: u64) -> Option<String> {
     let cache_lock = cache.read().await;
 
-    if let Some(entry) = cache_lock.get(ip) {
-        if !entry.is_expired(ttl_secs) {
-            return Some(entry.domain.clone());
-        }
+    if let Some(entry) = cache_lock.get(ip)
+        && !entry.is_expired(ttl_secs)
+    {
+        return Some(entry.domain.clone());
     }
 
     None

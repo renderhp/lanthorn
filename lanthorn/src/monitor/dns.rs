@@ -149,7 +149,7 @@ async fn handle_dns_event(
     let query = PendingDnsQuery {
         domain: domain.clone(),
         timestamp_ns: event.timestamp_ns,
-        cgroup_id: event.cgroup_id,
+        _cgroup_id: event.cgroup_id,
     };
 
     let mut cache = pending_cache.write().await;

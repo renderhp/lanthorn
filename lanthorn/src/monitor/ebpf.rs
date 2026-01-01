@@ -136,20 +136,20 @@ async fn handle_event(
         info!("  Process: {}", name);
     }
 
-    let _ = storage::insert_event(
-        &pool,
-        "tcp_connect",
-        "tcp",
-        &ip,
-        event.port,
-        event.pid,
-        Some(event.cgroup_id),
+    let event_data = storage::EventData {
+        event_type: "tcp_connect".to_string(),
+        protocol: "tcp".to_string(),
+        dst_addr: ip,
+        dst_port: event.port,
+        pid: event.pid,
+        cgroup_id: Some(event.cgroup_id),
         container_id,
         container_name,
-        image_name,
+        container_image: image_name,
         domain_name,
         process_name,
         process_cmdline,
-    )
-    .await;
+    };
+
+    let _ = storage::insert_event(&pool, &event_data).await;
 }
