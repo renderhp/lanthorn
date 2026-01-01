@@ -53,7 +53,7 @@ Manage storage with retention and aggregation.
 
 ### Phase 3: API Layer
 
-REST API for the web dashboard.
+REST API for the web dashboard. Web server should run without sudo privileges by forking the process and dropping privs.
 
 - [ ] Embed Axum web server
 - [ ] Configurable port (default: 7777 or similar)
