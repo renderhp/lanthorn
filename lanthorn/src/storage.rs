@@ -21,10 +21,12 @@ pub async fn insert_event(
     container_name: Option<String>,
     container_image: Option<String>,
     domain_name: Option<String>,
+    process_name: Option<String>,
+    process_cmdline: Option<String>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO events (event_type, protocol, dst_addr, dst_port, pid, cgroup_id, container_id, container_name, image_name, domain_name)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO events (event_type, protocol, dst_addr, dst_port, pid, cgroup_id, container_id, container_name, image_name, domain_name, process_name, process_cmdline)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(event_type)
     .bind(protocol)
@@ -36,6 +38,8 @@ pub async fn insert_event(
     .bind(container_name)
     .bind(container_image)
     .bind(domain_name)
+    .bind(process_name)
+    .bind(process_cmdline)
     .execute(pool)
     .await?;
 

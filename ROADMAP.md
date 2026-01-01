@@ -22,17 +22,17 @@ The first release focuses on providing visibility into network connections with 
 
 Enhance captured data with actionable context.
 
-- [ ] Capture process name from `/proc/{pid}/comm`
-- [ ] Capture process command line from `/proc/{pid}/cmdline`
+- [x] Capture process name from `/proc/{pid}/comm`
+- [x] Capture process command line from `/proc/{pid}/cmdline`
 - [ ] Integrate MaxMind GeoLite2 for IP-to-country lookup
 - [ ] Fetch threat feeds on startup (abuse.ch URLhaus + Feodo Tracker)
 - [ ] Match connections against threat feeds
 - [ ] Update database schema:
-  - `process_name` - executable name
-  - `process_cmdline` - full command line
-  - `country` - 2-letter country code
-  - `is_threat` - boolean flag
-  - `threat_source` - which feed matched
+  - [x] `process_name` - executable name
+  - [x] `process_cmdline` - full command line
+  - [ ] `country` - 2-letter country code
+  - [ ] `is_threat` - boolean flag
+  - [ ] `threat_source` - which feed matched
 
 ### Phase 2: Data Lifecycle
 

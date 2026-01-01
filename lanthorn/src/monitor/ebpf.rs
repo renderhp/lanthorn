@@ -6,7 +6,11 @@ use sqlx::SqlitePool;
 use tokio::io::unix::AsyncFd;
 
 use crate::monitor::dns_cache::{resolve_domain_for_connection, DnsCache, PendingDnsCache};
-use crate::{monitor::DockerCache, storage, utils::ip_to_string};
+use crate::{
+    monitor::DockerCache,
+    storage,
+    utils::{get_process_cmdline, get_process_name, ip_to_string},
+};
 
 pub async fn run_tcp_monitor(
     pool: SqlitePool,
@@ -122,6 +126,14 @@ async fn handle_event(
     let container_id = docker_info.as_ref().map(|d| d.id.clone());
     let image_name = docker_info.as_ref().and_then(|d| d.image.clone());
 
+    // Enrich with process info from /proc
+    let process_name = get_process_name(event.pid).ok();
+    let process_cmdline = get_process_cmdline(event.pid).ok();
+
+    if let Some(ref name) = process_name {
+        info!("  Process: {}", name);
+    }
+
     let _ = storage::insert_event(
         &pool,
         "tcp_connect",
@@ -134,6 +146,8 @@ async fn handle_event(
         container_name,
         image_name,
         domain_name,
+        process_name,
+        process_cmdline,
     )
     .await;
 }
