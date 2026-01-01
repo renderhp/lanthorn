@@ -16,17 +16,18 @@ mod vmlinux;
 
 use aya_ebpf::{
     helpers::{
-        bpf_get_current_pid_tgid, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes,
+        bpf_get_current_pid_tgid, bpf_probe_read_kernel, bpf_probe_read_user,
+        bpf_probe_read_user_str_bytes,
         generated::{bpf_get_current_cgroup_id, bpf_ktime_get_ns},
     },
-    macros::{kprobe, map, uprobe},
-    maps::RingBuf,
-    programs::ProbeContext,
+    macros::{kprobe, map, uprobe, uretprobe},
+    maps::{HashMap, RingBuf},
+    programs::{ProbeContext, RetProbeContext},
 };
 use aya_log_ebpf::info;
-use lanthorn_common::{ConnectEvent, DnsEvent};
+use lanthorn_common::{ConnectEvent, DnsEvent, PendingDnsEntry};
 
-use crate::vmlinux::{sock, sock_common};
+use crate::vmlinux::{sock, sock_common, sockaddr_in, sockaddr_in6};
 
 #[map]
 static mut EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
@@ -34,8 +35,28 @@ static mut EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 #[map]
 static mut DNS_EVENTS: RingBuf = RingBuf::with_byte_size(128 * 1024, 0);
 
+/// Hash map to correlate getaddrinfo entry and return probes.
+/// Key: u64 (pid_tgid), Value: PendingDnsEntry
+#[map]
+static mut PENDING_DNS: HashMap<u64, PendingDnsEntry> = HashMap::with_max_entries(1024, 0);
+
 const AF_INET: u16 = 2;
 const AF_INET6: u16 = 10;
+
+/// struct addrinfo - glibc userspace structure (not in kernel BTF)
+/// This is a stable ABI structure used by getaddrinfo()
+#[repr(C)]
+struct addrinfo {
+    ai_flags: i32,
+    ai_family: i32,
+    ai_socktype: i32,
+    ai_protocol: i32,
+    ai_addrlen: u32,
+    _padding: u32, // Alignment padding on 64-bit
+    ai_addr: *mut u8,
+    ai_canonname: *mut u8,
+    ai_next: *mut addrinfo,
+}
 
 #[kprobe]
 pub fn kprobetcp(ctx: ProbeContext) -> u32 {
@@ -108,46 +129,170 @@ pub fn getaddrinfo_entry(ctx: ProbeContext) -> u32 {
 }
 
 fn try_getaddrinfo_entry(ctx: ProbeContext) -> Result<u32, i64> {
-    // getaddrinfo signature: int getaddrinfo(const char *node, ...)
-    // First argument is domain name (const char*)
+    // getaddrinfo signature: int getaddrinfo(const char *node, const char *service,
+    //                                        const struct addrinfo *hints, struct addrinfo **res)
     let node_ptr: *const u8 = ctx.arg(0).ok_or(1i64)?;
+    let res_ptr: u64 = ctx.arg::<u64>(3).ok_or(1i64)?; // struct addrinfo **res
 
     // Skip if node is NULL (happens when only service/port is provided)
     if node_ptr.is_null() {
         return Ok(0);
     }
 
-    if let Some(mut ring_entry) = unsafe {
-        let ptr = core::ptr::addr_of_mut!(DNS_EVENTS);
-        (*ptr).reserve::<DnsEvent>(0)
-    } {
-        let event = unsafe { &mut *ring_entry.as_mut_ptr() };
+    let pid_tgid = bpf_get_current_pid_tgid();
 
-        // Fill metadata first
-        let pid_tgid = bpf_get_current_pid_tgid();
-        event.pid = (pid_tgid >> 32) as u32;
-        event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
-        event.timestamp_ns = unsafe { bpf_ktime_get_ns() };
+    // Create pending entry to store in hash map
+    let mut entry = PendingDnsEntry {
+        domain: [0u8; 128],
+        domain_len: 0,
+        cgroup_id: unsafe { bpf_get_current_cgroup_id() },
+        timestamp_ns: unsafe { bpf_ktime_get_ns() },
+        res_ptr,
+    };
 
-        // Read domain name from userspace (this also zero-initializes the buffer)
-        let bytes_read =
-            unsafe { bpf_probe_read_user_str_bytes(node_ptr as *const u8, &mut event.domain) };
+    // Read domain name from userspace
+    let bytes_read = unsafe { bpf_probe_read_user_str_bytes(node_ptr, &mut entry.domain) };
 
-        match bytes_read {
-            Ok(buf) => {
-                // buf.len() already excludes the null terminator
-                event.domain_len = buf.len() as u16;
-                info!(
-                    &ctx,
-                    "DNS query: pid={}, domain_len={}", event.pid, event.domain_len
-                );
-                ring_entry.submit(0);
+    match bytes_read {
+        Ok(buf) => {
+            entry.domain_len = buf.len() as u16;
+
+            // Store in hash map for retrieval in return probe
+            let pending_map = core::ptr::addr_of_mut!(PENDING_DNS);
+            let _ = unsafe { (*pending_map).insert(&pid_tgid, &entry, 0) };
+
+            info!(
+                &ctx,
+                "DNS entry: pid_tgid={}, domain_len={}", pid_tgid, entry.domain_len
+            );
+        }
+        Err(_) => {
+            // Failed to read domain, don't store entry
+        }
+    }
+
+    Ok(0)
+}
+
+#[uretprobe]
+pub fn getaddrinfo_return(ctx: RetProbeContext) -> u32 {
+    match try_getaddrinfo_return(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret.try_into().unwrap_or(1),
+    }
+}
+
+fn try_getaddrinfo_return(ctx: RetProbeContext) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+
+    // Look up the pending entry from the hash map
+    let pending_map = core::ptr::addr_of_mut!(PENDING_DNS);
+    let entry = unsafe {
+        match (*pending_map).get(&pid_tgid) {
+            Some(e) => *e,        // Copy the entry
+            None => return Ok(0), // No entry found (node was NULL), skip
+        }
+    };
+
+    // Always remove the entry from the map to prevent leaks
+    let _ = unsafe { (*pending_map).remove(&pid_tgid) };
+
+    // Get return value (0 = success, non-zero = error)
+    let ret_val: i32 = ctx.ret();
+
+    // Handle getaddrinfo failure
+    if ret_val != 0 {
+        // TODO: Consider logging failed lookups for debugging
+        return Ok(0);
+    }
+
+    // Read the result pointer: *res (dereference struct addrinfo **)
+    let res_ptr_ptr = entry.res_ptr as *const *const addrinfo;
+    let first_addrinfo_ptr: *const addrinfo = match unsafe { bpf_probe_read_user(res_ptr_ptr) } {
+        Ok(ptr) => ptr,
+        Err(_) => return Ok(0),
+    };
+
+    if first_addrinfo_ptr.is_null() {
+        return Ok(0);
+    }
+
+    // Iterate through the addrinfo linked list (bounded loop for eBPF verifier)
+    let mut current_ptr = first_addrinfo_ptr;
+
+    // Max 16 addresses to satisfy eBPF verifier's bounded loop requirement
+    for _ in 0..16u32 {
+        if current_ptr.is_null() {
+            break;
+        }
+
+        // Read current addrinfo struct
+        let addrinfo_result: addrinfo = match unsafe { bpf_probe_read_user(current_ptr) } {
+            Ok(ai) => ai,
+            Err(_) => break,
+        };
+
+        // Only process IPv4 and IPv6
+        let family = addrinfo_result.ai_family as u16;
+        if family != AF_INET && family != AF_INET6 {
+            // Move to next entry
+            current_ptr = addrinfo_result.ai_next;
+            continue;
+        }
+
+        // Reserve space in ring buffer for this address
+        if let Some(mut ring_entry) = unsafe {
+            let ptr = core::ptr::addr_of_mut!(DNS_EVENTS);
+            (*ptr).reserve::<DnsEvent>(0)
+        } {
+            let event = unsafe { &mut *ring_entry.as_mut_ptr() };
+
+            // Copy metadata from pending entry
+            event.pid = (pid_tgid >> 32) as u32;
+            event.cgroup_id = entry.cgroup_id;
+            event.timestamp_ns = entry.timestamp_ns;
+            event.domain = entry.domain;
+            event.domain_len = entry.domain_len;
+            event._padding = [0; 1];
+            event.success = 1;
+            event.family = family;
+            event.resolved_ip = [0u8; 16];
+
+            let mut valid = true;
+            match family {
+                AF_INET => {
+                    // Read sockaddr_in
+                    if let Ok(sockaddr) = unsafe {
+                        bpf_probe_read_user(addrinfo_result.ai_addr as *const sockaddr_in)
+                    } {
+                        event.resolved_ip[0..4]
+                            .copy_from_slice(&sockaddr.sin_addr.s_addr.to_ne_bytes());
+                    } else {
+                        valid = false;
+                    }
+                }
+                AF_INET6 => {
+                    // Read sockaddr_in6
+                    if let Ok(sockaddr) = unsafe {
+                        bpf_probe_read_user(addrinfo_result.ai_addr as *const sockaddr_in6)
+                    } {
+                        event.resolved_ip = unsafe { sockaddr.sin6_addr.in6_u.u6_addr8 };
+                    } else {
+                        valid = false;
+                    }
+                }
+                _ => valid = false,
             }
-            Err(_) => {
-                // Failed to read domain, discard the ring entry
+
+            if valid {
+                ring_entry.submit(0);
+            } else {
                 ring_entry.discard(0);
             }
         }
+
+        // Move to next entry in linked list
+        current_ptr = addrinfo_result.ai_next;
     }
 
     Ok(0)

@@ -47,9 +47,11 @@ pub async fn insert_event(pool: &SqlitePool, event: &EventData) -> Result<(), sq
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_dns_event(
     pool: &SqlitePool,
     domain: &str,
+    resolved_ip: Option<&str>,
     pid: u32,
     cgroup_id: Option<u64>,
     container_id: Option<String>,
@@ -57,10 +59,11 @@ pub async fn insert_dns_event(
     container_image: Option<String>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO dns_events (domain, pid, cgroup_id, container_id, container_name, image_name)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO dns_events (domain, resolved_ip, pid, cgroup_id, container_id, container_name, image_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(domain)
+    .bind(resolved_ip)
     .bind(pid as i64)
     .bind(cgroup_id.map(|v| v as i64))
     .bind(container_id)

@@ -8,7 +8,7 @@ mod monitor;
 mod storage;
 mod utils;
 
-use monitor::{DnsCache, DockerCache, PendingDnsCache};
+use monitor::{DnsCache, DockerCache};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -41,7 +41,6 @@ async fn main() -> Result<(), anyhow::Error> {
     // Create shared caches
     let docker_cache: DockerCache = Arc::new(RwLock::new(HashMap::new()));
     let dns_cache: DnsCache = Arc::new(RwLock::new(HashMap::new()));
-    let pending_dns_cache: PendingDnsCache = Arc::new(RwLock::new(HashMap::new()));
 
     // Start Docker monitor
     if !args.disable_docker_mon {
@@ -57,17 +56,11 @@ async fn main() -> Result<(), anyhow::Error> {
     if !args.disable_dns_mon {
         let pool_clone = pool.clone();
         let dns_cache_clone = Arc::clone(&dns_cache);
-        let pending_cache_clone = Arc::clone(&pending_dns_cache);
         let docker_cache_clone = Arc::clone(&docker_cache);
 
         tokio::spawn(async move {
-            if let Err(e) = monitor::run_dns_monitor(
-                pool_clone,
-                dns_cache_clone,
-                pending_cache_clone,
-                docker_cache_clone,
-            )
-            .await
+            if let Err(e) =
+                monitor::run_dns_monitor(pool_clone, dns_cache_clone, docker_cache_clone).await
             {
                 error!("DNS monitor failed: {}", e);
             }
@@ -79,16 +72,10 @@ async fn main() -> Result<(), anyhow::Error> {
         let pool_clone = pool.clone();
         let docker_cache_clone = Arc::clone(&docker_cache);
         let dns_cache_clone = Arc::clone(&dns_cache);
-        let pending_cache_clone = Arc::clone(&pending_dns_cache);
 
         tokio::spawn(async move {
-            if let Err(e) = monitor::run_tcp_monitor(
-                pool_clone,
-                docker_cache_clone,
-                dns_cache_clone,
-                pending_cache_clone,
-            )
-            .await
+            if let Err(e) =
+                monitor::run_tcp_monitor(pool_clone, docker_cache_clone, dns_cache_clone).await
             {
                 error!("TCP Monitor failed: {}", e);
             };

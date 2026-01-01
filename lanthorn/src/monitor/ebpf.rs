@@ -8,17 +8,18 @@ use tokio::io::unix::AsyncFd;
 use crate::{
     monitor::{
         DockerCache,
-        dns_cache::{DnsCache, PendingDnsCache, resolve_domain_for_connection},
+        dns_cache::{DnsCache, lookup_domain},
     },
     storage,
     utils::{get_process_cmdline, get_process_name, ip_to_string},
 };
 
+const DNS_CACHE_TTL_SECS: u64 = 300; // 5 minutes
+
 pub async fn run_tcp_monitor(
     pool: SqlitePool,
     docker_cache: DockerCache,
     dns_cache: DnsCache,
-    pending_dns_cache: PendingDnsCache,
 ) -> Result<(), anyhow::Error> {
     info!("Starting TCP connection monitor...");
 
@@ -57,14 +58,7 @@ pub async fn run_tcp_monitor(
 
         while let Some(item) = guard.get_inner_mut().next() {
             let event = unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ConnectEvent) };
-            handle_event(
-                pool.clone(),
-                event,
-                docker_cache.clone(),
-                dns_cache.clone(),
-                pending_dns_cache.clone(),
-            )
-            .await;
+            handle_event(pool.clone(), event, docker_cache.clone(), dns_cache.clone()).await;
         }
 
         guard.clear_ready();
@@ -76,7 +70,6 @@ async fn handle_event(
     event: ConnectEvent,
     docker_cache: DockerCache,
     dns_cache: DnsCache,
-    pending_dns_cache: PendingDnsCache,
 ) {
     info!(
         "Connection: PID={}, Port={}, Family={}, CGroup={}",
@@ -92,17 +85,9 @@ async fn handle_event(
     // Parse IP address for DNS lookup
     let ip_addr: Option<std::net::IpAddr> = ip.parse().ok();
 
-    // Look up domain name in DNS cache using the timestamp from eBPF event
-    let domain_name = if let Some(addr) = ip_addr {
-        resolve_domain_for_connection(
-            &pending_dns_cache,
-            &dns_cache,
-            event.pid,
-            &addr,
-            event.timestamp_ns,
-            300, // 5 minute TTL
-        )
-        .await
+    // Look up domain name directly in DNS cache (populated by uretprobe)
+    let domain_name = if let Some(ref addr) = ip_addr {
+        lookup_domain(&dns_cache, addr, DNS_CACHE_TTL_SECS).await
     } else {
         None
     };

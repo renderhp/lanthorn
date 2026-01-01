@@ -1,26 +1,27 @@
-use std::time::Duration;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aya::{Ebpf, maps::RingBuf, programs::UProbe};
 use lanthorn_common::DnsEvent;
-use log::{info, warn};
+use log::{debug, info, warn};
 use sqlx::SqlitePool;
 use tokio::io::unix::AsyncFd;
 
 use crate::{
     monitor::{
         DockerCache,
-        dns_cache::{DnsCache, PendingDnsCache, PendingDnsQuery, evict_expired},
+        dns_cache::{DnsCache, DnsCacheEntry, evict_expired, insert_mapping},
     },
     storage,
 };
 
 const DNS_CACHE_TTL_SECS: u64 = 300; // 5 minutes default TTL
-const PENDING_DNS_WINDOW_NS: u64 = 30_000_000_000; // 30 seconds
+const AF_INET: u16 = 2;
+const AF_INET6: u16 = 10;
 
 pub async fn run_dns_monitor(
     pool: SqlitePool,
     dns_cache: DnsCache,
-    pending_dns_cache: PendingDnsCache,
     docker_cache: DockerCache,
 ) -> Result<(), anyhow::Error> {
     info!("Starting DNS resolution monitor...");
@@ -31,8 +32,7 @@ pub async fn run_dns_monitor(
         "/lanthorn"
     )))?;
 
-    // Attach uprobe to getaddrinfo in libc
-    // Try common libc locations
+    // Common libc locations
     let libc_paths = [
         "/lib/x86_64-linux-gnu/libc.so.6",
         "/lib/aarch64-linux-gnu/libc.so.6",
@@ -40,33 +40,38 @@ pub async fn run_dns_monitor(
         "/lib64/libc.so.6",
     ];
 
-    let program: &mut UProbe = bpf.program_mut("getaddrinfo_entry").unwrap().try_into()?;
-    program.load()?;
+    // Load and attach entry probe
+    let entry_program: &mut UProbe = bpf.program_mut("getaddrinfo_entry").unwrap().try_into()?;
+    entry_program.load()?;
 
-    let mut attached = false;
+    let mut attached_path: Option<&str> = None;
     for path in &libc_paths {
         if std::path::Path::new(path).exists() {
-            // For uprobe, we need to attach with offset None (auto-resolve symbol)
-            // and pid None (attach to all processes)
-            match program.attach("getaddrinfo", path, None, None) {
+            match entry_program.attach("getaddrinfo", path, None, None) {
                 Ok(_) => {
-                    info!("Attached DNS monitor to {} @ getaddrinfo", path);
-                    attached = true;
+                    info!("Attached DNS entry probe to {} @ getaddrinfo", path);
+                    attached_path = Some(path);
                     break;
                 }
                 Err(e) => {
-                    warn!("Failed to attach to {}: {}", path, e);
+                    warn!("Failed to attach entry probe to {}: {}", path, e);
                 }
             }
         }
     }
 
-    if !attached {
+    let Some(libc_path) = attached_path else {
         return Err(anyhow::anyhow!(
-            "Failed to attach to any libc path. Tried: {:?}",
+            "Failed to attach entry probe to any libc path. Tried: {:?}",
             libc_paths
         ));
-    }
+    };
+
+    // Load and attach return probe (uretprobe) to the same path
+    let return_program: &mut UProbe = bpf.program_mut("getaddrinfo_return").unwrap().try_into()?;
+    return_program.load()?;
+    return_program.attach("getaddrinfo", libc_path, None, None)?;
+    info!("Attached DNS return probe to {} @ getaddrinfo", libc_path);
 
     let ring_buf = RingBuf::try_from(bpf.take_map("DNS_EVENTS").unwrap())?;
     let mut ring_buf_poll = AsyncFd::new(ring_buf).unwrap();
@@ -84,16 +89,6 @@ pub async fn run_dns_monitor(
         }
     });
 
-    // Spawn pending DNS cleanup task
-    let pending_cache_for_cleanup = pending_dns_cache.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            cleanup_pending_dns(&pending_cache_for_cleanup).await;
-        }
-    });
-
     info!("Waiting for DNS events...");
 
     loop {
@@ -101,13 +96,7 @@ pub async fn run_dns_monitor(
 
         while let Some(item) = guard.get_inner_mut().next() {
             let event = unsafe { std::ptr::read_unaligned(item.as_ptr() as *const DnsEvent) };
-            handle_dns_event(
-                pool.clone(),
-                event,
-                pending_dns_cache.clone(),
-                docker_cache.clone(),
-            )
-            .await;
+            handle_dns_event(pool.clone(), event, dns_cache.clone(), docker_cache.clone()).await;
         }
 
         guard.clear_ready();
@@ -117,7 +106,7 @@ pub async fn run_dns_monitor(
 async fn handle_dns_event(
     pool: SqlitePool,
     event: DnsEvent,
-    pending_cache: PendingDnsCache,
+    dns_cache: DnsCache,
     docker_cache: DockerCache,
 ) {
     // Extract domain name from fixed-size buffer
@@ -130,10 +119,44 @@ async fn handle_dns_event(
         }
     };
 
-    info!(
-        "DNS query: pid={}, cgroup={}, domain={}",
-        event.pid, event.cgroup_id, domain
-    );
+    // Parse resolved IP if successful
+    let resolved_ip: Option<IpAddr> = if event.success == 1 {
+        match event.family {
+            AF_INET => {
+                let addr_bytes: [u8; 4] = event.resolved_ip[0..4].try_into().unwrap();
+                Some(IpAddr::V4(Ipv4Addr::from(addr_bytes)))
+            }
+            AF_INET6 => Some(IpAddr::V6(Ipv6Addr::from(event.resolved_ip))),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    if let Some(ip) = &resolved_ip {
+        info!(
+            "DNS resolution: pid={}, domain={} -> {}",
+            event.pid, domain, ip
+        );
+
+        // Insert into DNS cache directly (no more pending cache!)
+        // Use wall clock time for TTL expiration (eBPF timestamp is kernel monotonic time)
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let entry = DnsCacheEntry {
+            domain: domain.clone(),
+            timestamp_ns: now_ns,
+        };
+        insert_mapping(&dns_cache, *ip, entry).await;
+    } else {
+        debug!(
+            "DNS query (no result): pid={}, domain={}, success={}",
+            event.pid, domain, event.success
+        );
+        // TODO: Consider logging failed lookups to database for debugging
+    }
 
     // Look up Docker container info
     let docker_info = docker_cache.read().await.get(&event.cgroup_id).cloned();
@@ -145,23 +168,7 @@ async fn handle_dns_event(
         );
     }
 
-    // Store in pending DNS cache for later correlation with TCP connections
-    let query = PendingDnsQuery {
-        domain: domain.clone(),
-        timestamp_ns: event.timestamp_ns,
-        _cgroup_id: event.cgroup_id,
-    };
-
-    let mut cache = pending_cache.write().await;
-    cache.entry(event.pid).or_insert_with(Vec::new).push(query);
-
-    // Keep only recent queries (within 30 seconds)
-    if let Some(queries) = cache.get_mut(&event.pid) {
-        let cutoff = event.timestamp_ns.saturating_sub(PENDING_DNS_WINDOW_NS);
-        queries.retain(|q| q.timestamp_ns > cutoff);
-    }
-
-    // Optionally store DNS event in database for debugging/auditing
+    // Store DNS event in database (with resolved IP now)
     let container_name = docker_info
         .as_ref()
         .and_then(|d| d.names.clone())
@@ -172,6 +179,7 @@ async fn handle_dns_event(
     let _ = storage::insert_dns_event(
         &pool,
         &domain,
+        resolved_ip.as_ref().map(|ip| ip.to_string()).as_deref(),
         event.pid,
         Some(event.cgroup_id),
         container_id,
@@ -179,20 +187,4 @@ async fn handle_dns_event(
         image_name,
     )
     .await;
-}
-
-async fn cleanup_pending_dns(pending_cache: &PendingDnsCache) {
-    let mut cache = pending_cache.write().await;
-    let now_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
-
-    let cutoff = now_ns.saturating_sub(PENDING_DNS_WINDOW_NS);
-
-    // Remove entries with no recent queries
-    cache.retain(|_pid, queries| {
-        queries.retain(|q| q.timestamp_ns > cutoff);
-        !queries.is_empty()
-    });
 }
