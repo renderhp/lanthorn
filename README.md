@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/renderhp/lanthorn/actions/workflows/ci.yml/badge.svg)](https://github.com/renderhp/lanthorn/actions/workflows/ci.yml)
 
-A lightweight network monitoring tool that tracks TCP connections and correlates them with Docker containers. Lanthorn uses eBPF (Extended Berkeley Packet Filter) to efficiently capture network activity at the kernel level without impacting system performance.
+A lightweight network monitoring tool that tracks TCP connections and correlates them with Docker containers. Lanthorn uses eBPF (Extended Berkeley Packet Filter) to efficiently capture network activity at the kernel level.
 
 ## What does it do?
 
@@ -40,56 +40,15 @@ The program will:
 4. Store enriched connection events to `lanthorn.db` (SQLite)
 5. Run until you press Ctrl+C
 
-### Command Line Options
-
-```bash
-# Use a custom database path
-cargo run --release -- --db-path /path/to/custom.db
-
-# Disable TCP monitoring
-cargo run --release -- --disable-tcp-mon
-
-# Disable DNS resolution tracking
-cargo run --release -- --disable-dns-mon
-
-# Disable Docker monitoring
-cargo run --release -- --disable-docker-mon
-```
-
 ## Building
 
 ```bash
 # Development build
 cargo build
 
-# Release build (recommended)
+# Release build
 cargo build --release
 
 # Run tests
 cargo test
 ```
-
-## Cross-Compiling from macOS
-
-If you're developing on macOS but need to run on Linux:
-
-1. Install cross-compilation tools:
-   ```bash
-   rustup target add x86_64-unknown-linux-musl  # or aarch64-unknown-linux-musl
-   brew install llvm filosottile/musl-cross/musl-cross
-   cargo install bpf-linker --no-default-features
-   ```
-
-2. Build for Linux:
-   ```bash
-   CC=x86_64-linux-musl-gcc cargo build --package lanthorn --release \
-     --target=x86_64-unknown-linux-musl \
-     --config=target.x86_64-unknown-linux-musl.linker=\"x86_64-linux-musl-gcc\"
-   ```
-
-3. Copy `target/x86_64-unknown-linux-musl/release/lanthorn` to your Linux system
-
-## License
-
-Licensed under MIT OR Apache-2.0
-
