@@ -14,8 +14,6 @@
 #[rustfmt::skip]
 mod vmlinux;
 
-use crate::vmlinux::{sock, sock_common};
-
 use aya_ebpf::{
     helpers::{
         bpf_get_current_pid_tgid, bpf_probe_read_kernel, bpf_probe_read_user_str_bytes,
@@ -26,8 +24,9 @@ use aya_ebpf::{
     programs::ProbeContext,
 };
 use aya_log_ebpf::info;
-
 use lanthorn_common::{ConnectEvent, DnsEvent};
+
+use crate::vmlinux::{sock, sock_common};
 
 #[map]
 static mut EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
@@ -131,15 +130,17 @@ fn try_getaddrinfo_entry(ctx: ProbeContext) -> Result<u32, i64> {
         event.timestamp_ns = unsafe { bpf_ktime_get_ns() };
 
         // Read domain name from userspace (this also zero-initializes the buffer)
-        let bytes_read = unsafe {
-            bpf_probe_read_user_str_bytes(node_ptr as *const u8, &mut event.domain)
-        };
+        let bytes_read =
+            unsafe { bpf_probe_read_user_str_bytes(node_ptr as *const u8, &mut event.domain) };
 
         match bytes_read {
             Ok(buf) => {
                 // buf.len() already excludes the null terminator
                 event.domain_len = buf.len() as u16;
-                info!(&ctx, "DNS query: pid={}, domain_len={}", event.pid, event.domain_len);
+                info!(
+                    &ctx,
+                    "DNS query: pid={}, domain_len={}", event.pid, event.domain_len
+                );
                 ring_entry.submit(0);
             }
             Err(_) => {

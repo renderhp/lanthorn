@@ -1,13 +1,18 @@
-use aya::{maps::RingBuf, programs::UProbe, Ebpf};
+use std::time::Duration;
+
+use aya::{Ebpf, maps::RingBuf, programs::UProbe};
 use lanthorn_common::DnsEvent;
 use log::{info, warn};
 use sqlx::SqlitePool;
-use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 
-use crate::monitor::dns_cache::{evict_expired, DnsCache, PendingDnsCache, PendingDnsQuery};
-use crate::monitor::DockerCache;
-use crate::storage;
+use crate::{
+    monitor::{
+        DockerCache,
+        dns_cache::{DnsCache, PendingDnsCache, PendingDnsQuery, evict_expired},
+    },
+    storage,
+};
 
 const DNS_CACHE_TTL_SECS: u64 = 300; // 5 minutes default TTL
 const PENDING_DNS_WINDOW_NS: u64 = 30_000_000_000; // 30 seconds

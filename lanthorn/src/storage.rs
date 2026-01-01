@@ -57,7 +57,7 @@ pub async fn insert_dns_event(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO dns_events (domain, pid, cgroup_id, container_id, container_name, image_name)
-         VALUES (?, ?, ?, ?, ?, ?)"
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(domain)
     .bind(pid as i64)

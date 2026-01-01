@@ -1,3 +1,5 @@
+use std::{collections::HashMap, os::unix::fs::MetadataExt, sync::Arc};
+
 use bollard::{
     Docker,
     query_parameters::{EventsOptions, ListContainersOptions},
@@ -5,7 +7,6 @@ use bollard::{
 };
 use futures::StreamExt;
 use log::{debug, error, info, warn};
-use std::{collections::HashMap, os::unix::fs::MetadataExt, sync::Arc};
 use tokio::sync::RwLock;
 
 pub type DockerCache = Arc<RwLock<HashMap<u64, MonitoredContainer>>>;
@@ -31,7 +32,10 @@ pub async fn run_docker_monitor(cache: DockerCache) -> Result<(), anyhow::Error>
 }
 
 /// Load all currently running containers into the cache
-async fn load_running_containers(docker: &Docker, cache: &DockerCache) -> Result<(), anyhow::Error> {
+async fn load_running_containers(
+    docker: &Docker,
+    cache: &DockerCache,
+) -> Result<(), anyhow::Error> {
     let options = Some(ListContainersOptions {
         all: true,
         limit: None,
@@ -78,7 +82,10 @@ async fn watch_container_events(docker: &Docker, cache: &DockerCache) -> Result<
                 let actor = event.actor.as_ref();
                 let container_id = actor.and_then(|a| a.id.as_deref());
 
-                debug!("Docker event: action={}, container_id={:?}", action, container_id);
+                debug!(
+                    "Docker event: action={}, container_id={:?}",
+                    action, container_id
+                );
 
                 match action {
                     "start" => {
@@ -154,7 +161,10 @@ async fn handle_container_start(docker: &Docker, cache: &DockerCache, container_
             }
         }
         Err(e) => {
-            error!("Failed to inspect started container {}: {}", container_id, e);
+            error!(
+                "Failed to inspect started container {}: {}",
+                container_id, e
+            );
         }
     }
 }

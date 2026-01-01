@@ -1,7 +1,10 @@
-use std::collections::HashMap;
-use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use tokio::sync::RwLock;
 
 pub type DnsCache = Arc<RwLock<HashMap<IpAddr, DnsCacheEntry>>>;
@@ -10,7 +13,7 @@ pub type PendingDnsCache = Arc<RwLock<HashMap<u32, Vec<PendingDnsQuery>>>>;
 #[derive(Debug, Clone)]
 pub struct DnsCacheEntry {
     pub domain: String,
-    pub timestamp_ns: u64,  // When this was resolved (from eBPF event)
+    pub timestamp_ns: u64, // When this was resolved (from eBPF event)
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +87,11 @@ pub async fn resolve_domain_for_connection(
     // Check pending DNS queries for this PID
     let cache = pending_cache.read().await;
     if let Some(queries) = cache.get(&pid) {
-        debug!("Found {} pending DNS queries for PID {}", queries.len(), pid);
+        debug!(
+            "Found {} pending DNS queries for PID {}",
+            queries.len(),
+            pid
+        );
 
         // Find most recent query (within 30 seconds before TCP connection)
         let cutoff = timestamp_ns.saturating_sub(30_000_000_000);
@@ -95,7 +102,10 @@ pub async fn resolve_domain_for_connection(
             .max_by_key(|q| q.timestamp_ns)
         {
             let domain = query.domain.clone();
-            debug!("Correlating IP {} with domain {} for PID {}", ip, domain, pid);
+            debug!(
+                "Correlating IP {} with domain {} for PID {}",
+                ip, domain, pid
+            );
 
             // Cache this mapping for future use
             let entry = DnsCacheEntry {
@@ -123,9 +133,11 @@ pub async fn resolve_domain_for_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
+
     use tokio::sync::RwLock;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_cache_insert_and_lookup() {

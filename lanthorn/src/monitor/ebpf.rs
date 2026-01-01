@@ -1,13 +1,15 @@
-use aya::{maps::RingBuf, programs::KProbe, Ebpf};
+use aya::{Ebpf, maps::RingBuf, programs::KProbe};
 use aya_log::EbpfLogger;
 use lanthorn_common::ConnectEvent;
 use log::{info, warn};
 use sqlx::SqlitePool;
 use tokio::io::unix::AsyncFd;
 
-use crate::monitor::dns_cache::{resolve_domain_for_connection, DnsCache, PendingDnsCache};
 use crate::{
-    monitor::DockerCache,
+    monitor::{
+        DockerCache,
+        dns_cache::{DnsCache, PendingDnsCache, resolve_domain_for_connection},
+    },
     storage,
     utils::{get_process_cmdline, get_process_name, ip_to_string},
 };

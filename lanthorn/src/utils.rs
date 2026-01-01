@@ -1,7 +1,8 @@
-use std::fs;
-use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::path::PathBuf;
+use std::{
+    fs, io,
+    net::{Ipv4Addr, Ipv6Addr},
+    path::PathBuf,
+};
 
 pub fn ip_to_string(family: u16, ip: [u8; 16]) -> Option<String> {
     match family {
@@ -45,8 +46,9 @@ pub fn get_process_cmdline(pid: u32) -> io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::process;
+
+    use super::*;
 
     #[test]
     fn test_get_process_name_current() {

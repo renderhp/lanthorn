@@ -1,9 +1,8 @@
-use tokio::sync::RwLock;
+use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
 use log::{error, info};
-use std::collections::HashMap;
-use std::sync::Arc;
+use tokio::sync::RwLock;
 
 mod monitor;
 mod storage;
