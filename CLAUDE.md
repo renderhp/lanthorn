@@ -50,7 +50,7 @@ This is a Rust workspace with three crates:
 
 ## Development Commands
 
-### Installing dependencies (required before building)
+### Installing dependencies (required to build, run if build fails)
 ```bash
 # install necessary toolchains
 rustup toolchain install stable nightly --component rust-src
@@ -85,7 +85,7 @@ cargo test -p lanthorn
 cargo test -p lanthorn-common
 ```
 
-### Code Quality
+### Code Quality (run and address all issues before every commit)
 ```bash
 # Check code without building
 cargo check
