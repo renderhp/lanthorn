@@ -175,7 +175,7 @@ async fn test_threat_detection() {
         .await
         .unwrap();
 
-    assert_eq!(row.get::<bool, _>("is_threat"), true);
+    assert!(row.get::<bool, _>("is_threat"));
     assert_eq!(row.get::<String, _>("threat_source"), "Feodo Tracker");
 
     // 3. Simulate connection to Malicious Domain
@@ -235,6 +235,6 @@ async fn test_threat_detection() {
         .await
         .unwrap();
 
-    assert_eq!(row.get::<bool, _>("is_threat"), true);
+    assert!(row.get::<bool, _>("is_threat"));
     assert_eq!(row.get::<String, _>("threat_source"), "URLhaus");
 }
