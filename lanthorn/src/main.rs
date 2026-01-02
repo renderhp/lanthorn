@@ -47,20 +47,6 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let pool = storage::init(&args.db_path).await?;
 
-    // Run data retention cleanup on startup
-    let retention_days = args.retention_days;
-    if retention_days > 0 {
-        info!(
-            "Running data retention cleanup (retention: {} days)...",
-            retention_days
-        );
-        if let Err(e) = storage::delete_old_events(&pool, retention_days).await {
-            error!("Failed to run retention cleanup: {}", e);
-        }
-    } else {
-        info!("Data retention disabled (keeping events forever)");
-    }
-
     // Initialise Threat Engine
     let threat_engine = ThreatEngine::new(pool.clone());
     if !args.disable_threat_feeds {
@@ -124,18 +110,22 @@ async fn main() -> Result<(), anyhow::Error> {
         });
     }
 
-    // Start periodic retention cleanup task (runs every hour)
+    // Start retention cleanup task (runs immediately, then every hour)
+    let retention_days = args.retention_days;
     if retention_days > 0 {
+        info!("Data retention enabled: {} days", retention_days);
         let pool_clone = pool.clone();
         tokio::spawn(async move {
             let cleanup_interval = Duration::from_secs(60 * 60); // 1 hour
             loop {
-                tokio::time::sleep(cleanup_interval).await;
                 if let Err(e) = storage::delete_old_events(&pool_clone, retention_days).await {
-                    error!("Periodic retention cleanup failed: {}", e);
+                    error!("Retention cleanup failed: {}", e);
                 }
+                tokio::time::sleep(cleanup_interval).await;
             }
         });
+    } else {
+        info!("Data retention disabled (keeping events forever)");
     }
 
     info!("All components initialised. Press Ctrl+C to exit.");

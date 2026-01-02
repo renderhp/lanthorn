@@ -106,3 +106,114 @@ pub async fn delete_old_events(pool: &SqlitePool, retention_days: u64) -> Result
 
     Ok(total_deleted)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::Row;
+
+    async fn setup_db() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn test_delete_old_events() {
+        let pool = setup_db().await;
+
+        // Insert an old event (10 days ago)
+        sqlx::query(
+            "INSERT INTO events (timestamp, event_type, protocol, dst_addr, dst_port, pid)
+             VALUES (datetime('now', '-10 days'), 'tcp_connect', 'tcp', '1.2.3.4', 80, 100)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert a recent event (1 day ago)
+        sqlx::query(
+            "INSERT INTO events (timestamp, event_type, protocol, dst_addr, dst_port, pid)
+             VALUES (datetime('now', '-1 days'), 'tcp_connect', 'tcp', '5.6.7.8', 443, 200)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert an old DNS event (10 days ago)
+        sqlx::query(
+            "INSERT INTO dns_events (timestamp, domain, pid)
+             VALUES (datetime('now', '-10 days'), 'old.example.com', 100)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert a recent DNS event (1 day ago)
+        sqlx::query(
+            "INSERT INTO dns_events (timestamp, domain, pid)
+             VALUES (datetime('now', '-1 days'), 'new.example.com', 200)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Verify we have 2 events and 2 dns_events before cleanup
+        let events_count: i64 = sqlx::query("SELECT COUNT(*) as count FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(events_count, 2);
+
+        let dns_count: i64 = sqlx::query("SELECT COUNT(*) as count FROM dns_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(dns_count, 2);
+
+        // Run retention cleanup with 3-day retention
+        let deleted = delete_old_events(&pool, 3).await.unwrap();
+        assert_eq!(deleted, 2); // Should delete 1 event + 1 dns_event
+
+        // Verify only recent events remain
+        let events_count: i64 = sqlx::query("SELECT COUNT(*) as count FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(events_count, 1);
+
+        let remaining_event: String = sqlx::query("SELECT dst_addr FROM events")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("dst_addr");
+        assert_eq!(remaining_event, "5.6.7.8");
+
+        // Verify only recent DNS event remains
+        let dns_count: i64 = sqlx::query("SELECT COUNT(*) as count FROM dns_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(dns_count, 1);
+
+        let remaining_dns: String = sqlx::query("SELECT domain FROM dns_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("domain");
+        assert_eq!(remaining_dns, "new.example.com");
+    }
+
+    #[tokio::test]
+    async fn test_delete_old_events_empty_db() {
+        let pool = setup_db().await;
+
+        // Run retention cleanup on empty database
+        let deleted = delete_old_events(&pool, 3).await.unwrap();
+        assert_eq!(deleted, 0);
+    }
+}
