@@ -48,6 +48,9 @@ pub async fn insert_event(pool: &SqlitePool, event: &EventData) -> Result<(), sq
     .execute(pool)
     .await?;
 
+    // Update aggregation table
+    upsert_aggregation(pool, event).await?;
+
     Ok(())
 }
 
@@ -73,6 +76,36 @@ pub async fn insert_dns_event(
     .bind(container_id)
     .bind(container_name)
     .bind(container_image)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Upserts a connection aggregation record.
+/// If a matching record exists (same container_id, process_name, destination, dst_port, protocol),
+/// increments connection_count and updates last_seen.
+/// Otherwise, creates a new record.
+async fn upsert_aggregation(pool: &SqlitePool, event: &EventData) -> Result<(), sqlx::Error> {
+    // Use domain_name if available, otherwise fall back to dst_addr
+    let destination = event.domain_name.as_deref().unwrap_or(&event.dst_addr);
+
+    // Use ON CONFLICT with indexed expressions (COALESCE handles NULLs in the unique index)
+    sqlx::query(
+        "INSERT INTO connection_aggregations (container_id, container_name, process_name, destination, dst_port, protocol, connection_count, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+         ON CONFLICT (COALESCE(container_id, ''), COALESCE(process_name, ''), destination, dst_port, protocol)
+         DO UPDATE SET
+             connection_count = connection_count + 1,
+             last_seen = datetime('now'),
+             container_name = COALESCE(excluded.container_name, container_name)"
+    )
+    .bind(&event.container_id)
+    .bind(&event.container_name)
+    .bind(&event.process_name)
+    .bind(destination)
+    .bind(event.dst_port as i64)
+    .bind(&event.protocol)
     .execute(pool)
     .await?;
 
@@ -215,5 +248,224 @@ mod tests {
         // Run retention cleanup on empty database
         let deleted = delete_old_events(&pool, 3).await.unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    fn create_test_event(
+        container_id: Option<&str>,
+        container_name: Option<&str>,
+        process_name: Option<&str>,
+        domain_name: Option<&str>,
+        dst_addr: &str,
+        dst_port: u16,
+    ) -> EventData {
+        EventData {
+            event_type: "tcp_connect".to_string(),
+            protocol: "tcp".to_string(),
+            dst_addr: dst_addr.to_string(),
+            dst_port,
+            pid: 1234,
+            cgroup_id: Some(5678),
+            container_id: container_id.map(String::from),
+            container_name: container_name.map(String::from),
+            container_image: Some("test-image".to_string()),
+            domain_name: domain_name.map(String::from),
+            process_name: process_name.map(String::from),
+            process_cmdline: Some("/usr/bin/test".to_string()),
+            is_threat: None,
+            threat_source: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_new_record() {
+        let pool = setup_db().await;
+
+        let event = create_test_event(
+            Some("container-123"),
+            Some("my-container"),
+            Some("curl"),
+            Some("api.example.com"),
+            "1.2.3.4",
+            443,
+        );
+
+        insert_event(&pool, &event).await.unwrap();
+
+        // Verify aggregation record was created
+        let row = sqlx::query(
+            "SELECT container_id, container_name, process_name, destination, dst_port, protocol, connection_count FROM connection_aggregations"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(row.get::<String, _>("container_id"), "container-123");
+        assert_eq!(row.get::<String, _>("container_name"), "my-container");
+        assert_eq!(row.get::<String, _>("process_name"), "curl");
+        assert_eq!(row.get::<String, _>("destination"), "api.example.com");
+        assert_eq!(row.get::<i64, _>("dst_port"), 443);
+        assert_eq!(row.get::<String, _>("protocol"), "tcp");
+        assert_eq!(row.get::<i64, _>("connection_count"), 1);
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_increments_count() {
+        let pool = setup_db().await;
+
+        let event = create_test_event(
+            Some("container-123"),
+            Some("my-container"),
+            Some("curl"),
+            Some("api.example.com"),
+            "1.2.3.4",
+            443,
+        );
+
+        // Insert the same event 3 times
+        insert_event(&pool, &event).await.unwrap();
+        insert_event(&pool, &event).await.unwrap();
+        insert_event(&pool, &event).await.unwrap();
+
+        // Verify only one aggregation record exists with count of 3
+        let count: i64 = sqlx::query("SELECT COUNT(*) as count FROM connection_aggregations")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(count, 1);
+
+        let connection_count: i64 =
+            sqlx::query("SELECT connection_count FROM connection_aggregations")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get("connection_count");
+        assert_eq!(connection_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_uses_ip_when_no_domain() {
+        let pool = setup_db().await;
+
+        let event = create_test_event(
+            Some("container-123"),
+            Some("my-container"),
+            Some("curl"),
+            None, // No domain
+            "1.2.3.4",
+            80,
+        );
+
+        insert_event(&pool, &event).await.unwrap();
+
+        // Verify destination falls back to IP address
+        let destination: String = sqlx::query("SELECT destination FROM connection_aggregations")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("destination");
+        assert_eq!(destination, "1.2.3.4");
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_different_destinations_separate_records() {
+        let pool = setup_db().await;
+
+        let event1 = create_test_event(
+            Some("container-123"),
+            Some("my-container"),
+            Some("curl"),
+            Some("api.example.com"),
+            "1.2.3.4",
+            443,
+        );
+
+        let event2 = create_test_event(
+            Some("container-123"),
+            Some("my-container"),
+            Some("curl"),
+            Some("other.example.com"),
+            "5.6.7.8",
+            443,
+        );
+
+        insert_event(&pool, &event1).await.unwrap();
+        insert_event(&pool, &event2).await.unwrap();
+
+        // Verify two separate aggregation records exist
+        let count: i64 = sqlx::query("SELECT COUNT(*) as count FROM connection_aggregations")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_different_ports_separate_records() {
+        let pool = setup_db().await;
+
+        let event1 = create_test_event(
+            Some("container-123"),
+            Some("my-container"),
+            Some("curl"),
+            Some("api.example.com"),
+            "1.2.3.4",
+            80,
+        );
+
+        let event2 = create_test_event(
+            Some("container-123"),
+            Some("my-container"),
+            Some("curl"),
+            Some("api.example.com"),
+            "1.2.3.4",
+            443,
+        );
+
+        insert_event(&pool, &event1).await.unwrap();
+        insert_event(&pool, &event2).await.unwrap();
+
+        // Verify two separate aggregation records exist (different ports)
+        let count: i64 = sqlx::query("SELECT COUNT(*) as count FROM connection_aggregations")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_aggregation_null_container_id() {
+        let pool = setup_db().await;
+
+        let event = create_test_event(
+            None, // No container
+            None,
+            Some("curl"),
+            Some("api.example.com"),
+            "1.2.3.4",
+            443,
+        );
+
+        // Insert same event twice
+        insert_event(&pool, &event).await.unwrap();
+        insert_event(&pool, &event).await.unwrap();
+
+        // Verify aggregation works with NULL container_id
+        let count: i64 = sqlx::query("SELECT COUNT(*) as count FROM connection_aggregations")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(count, 1);
+
+        let connection_count: i64 =
+            sqlx::query("SELECT connection_count FROM connection_aggregations")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get("connection_count");
+        assert_eq!(connection_count, 2);
     }
 }
