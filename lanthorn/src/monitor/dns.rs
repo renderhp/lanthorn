@@ -103,7 +103,7 @@ pub async fn run_dns_monitor(
     }
 }
 
-async fn handle_dns_event(
+pub(crate) async fn handle_dns_event(
     pool: SqlitePool,
     event: DnsEvent,
     dns_cache: DnsCache,

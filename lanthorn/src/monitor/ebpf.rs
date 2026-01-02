@@ -65,7 +65,7 @@ pub async fn run_tcp_monitor(
     }
 }
 
-async fn handle_event(
+pub(crate) async fn handle_event(
     pool: SqlitePool,
     event: ConnectEvent,
     docker_cache: DockerCache,
