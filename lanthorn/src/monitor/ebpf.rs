@@ -65,7 +65,7 @@ pub async fn run_tcp_monitor(
     }
 }
 
-async fn handle_event(
+pub(crate) async fn handle_event(
     pool: SqlitePool,
     event: ConnectEvent,
     docker_cache: DockerCache,
@@ -137,4 +137,80 @@ async fn handle_event(
     };
 
     let _ = storage::insert_event(&pool, &event_data).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::RwLock;
+    use sqlx::Row;
+    use crate::monitor::dns_cache::{DnsCacheEntry, insert_mapping};
+    use crate::monitor::docker::MonitoredContainer;
+
+    async fn setup_db() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn test_handle_connect_event() {
+        let pool = setup_db().await;
+        let dns_cache = Arc::new(RwLock::new(HashMap::new()));
+        let docker_cache = Arc::new(RwLock::new(HashMap::new()));
+
+        // Create a fake container in cache
+        let container = MonitoredContainer {
+            id: "test_container_id".to_string(),
+            names: Some(vec!["test_container_name".to_string()]),
+            image: Some("test_image".to_string()),
+            pid: 100,
+            cgroup_id: 12345,
+        };
+        docker_cache.write().await.insert(12345, container);
+
+        // Pre-fill DNS cache
+        let ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
+        let entry = DnsCacheEntry {
+            domain: "example.com".to_string(),
+            timestamp_ns: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        };
+        insert_mapping(&dns_cache, ip, entry).await;
+
+        // Construct ConnectEvent
+        // IPv4 1.2.3.4 mapped to [u8; 16]
+        let mut ip_bytes = [0u8; 16];
+        ip_bytes[0] = 1;
+        ip_bytes[1] = 2;
+        ip_bytes[2] = 3;
+        ip_bytes[3] = 4;
+
+        let event = ConnectEvent {
+            pid: 100,
+            cgroup_id: 12345,
+            timestamp_ns: 1000,
+            ip: ip_bytes,
+            port: 80,
+            family: 2, // AF_INET
+        };
+
+        handle_event(pool.clone(), event, docker_cache.clone(), dns_cache.clone()).await;
+
+        // Verify DB insertion
+        let row = sqlx::query("SELECT * FROM events WHERE pid = 100")
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to fetch event");
+
+        assert_eq!(row.get::<String, _>("dst_addr"), "1.2.3.4");
+        assert_eq!(row.get::<i64, _>("dst_port"), 80);
+        assert_eq!(row.get::<String, _>("container_name"), "test_container_name");
+        assert_eq!(row.get::<String, _>("domain_name"), "example.com");
+    }
 }

@@ -103,7 +103,7 @@ pub async fn run_dns_monitor(
     }
 }
 
-async fn handle_dns_event(
+pub(crate) async fn handle_dns_event(
     pool: SqlitePool,
     event: DnsEvent,
     dns_cache: DnsCache,
@@ -187,4 +187,79 @@ async fn handle_dns_event(
         image_name,
     )
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use sqlx::Row;
+    use crate::monitor::dns_cache::lookup_domain;
+    use crate::monitor::docker::MonitoredContainer;
+
+    async fn setup_db() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn test_handle_dns_event_success() {
+        let pool = setup_db().await;
+        let dns_cache = Arc::new(RwLock::new(HashMap::new()));
+        let docker_cache = Arc::new(RwLock::new(HashMap::new()));
+
+        // Create a fake container in cache
+        let container = MonitoredContainer {
+            id: "test_container_id".to_string(),
+            names: Some(vec!["test_container_name".to_string()]),
+            image: Some("test_image".to_string()),
+            pid: 100,
+            cgroup_id: 12345,
+        };
+        docker_cache.write().await.insert(12345, container);
+
+        // Construct DnsEvent
+        let domain_str = "example.com";
+        let mut domain = [0u8; 128];
+        domain[..domain_str.len()].copy_from_slice(domain_str.as_bytes());
+
+        // IPv4: 1.2.3.4
+        let mut resolved_ip = [0u8; 16];
+        resolved_ip[0] = 1;
+        resolved_ip[1] = 2;
+        resolved_ip[2] = 3;
+        resolved_ip[3] = 4;
+
+        let event = DnsEvent {
+            pid: 100,
+            cgroup_id: 12345,
+            timestamp_ns: 1000,
+            domain,
+            domain_len: domain_str.len() as u16,
+            family: AF_INET,
+            resolved_ip,
+            success: 1,
+            _padding: [0],
+        };
+
+        handle_dns_event(pool.clone(), event, dns_cache.clone(), docker_cache.clone()).await;
+
+        // Verify DB insertion
+        let row = sqlx::query("SELECT * FROM dns_events WHERE domain = 'example.com'")
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to fetch DNS event");
+
+        assert_eq!(row.get::<String, _>("domain"), "example.com");
+        assert_eq!(row.get::<String, _>("resolved_ip"), "1.2.3.4");
+        assert_eq!(row.get::<String, _>("container_name"), "test_container_name");
+
+        // Verify DNS cache update
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let cached_domain = lookup_domain(&dns_cache, &ip, 300).await;
+        assert_eq!(cached_domain, Some("example.com".to_string()));
+    }
 }
