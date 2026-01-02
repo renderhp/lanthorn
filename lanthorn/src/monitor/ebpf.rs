@@ -7,7 +7,7 @@ use tokio::io::unix::AsyncFd;
 
 use crate::{
     monitor::{
-        DockerCache,
+        DockerCache, ThreatEngine,
         dns_cache::{DnsCache, lookup_domain},
     },
     storage,
@@ -20,6 +20,7 @@ pub async fn run_tcp_monitor(
     pool: SqlitePool,
     docker_cache: DockerCache,
     dns_cache: DnsCache,
+    threat_engine: ThreatEngine,
 ) -> Result<(), anyhow::Error> {
     info!("Starting TCP connection monitor...");
 
@@ -58,7 +59,14 @@ pub async fn run_tcp_monitor(
 
         while let Some(item) = guard.get_inner_mut().next() {
             let event = unsafe { std::ptr::read_unaligned(item.as_ptr() as *const ConnectEvent) };
-            handle_event(pool.clone(), event, docker_cache.clone(), dns_cache.clone()).await;
+            handle_event(
+                pool.clone(),
+                event,
+                docker_cache.clone(),
+                dns_cache.clone(),
+                threat_engine.clone(),
+            )
+            .await;
         }
 
         guard.clear_ready();
@@ -70,6 +78,7 @@ pub(crate) async fn handle_event(
     event: ConnectEvent,
     docker_cache: DockerCache,
     dns_cache: DnsCache,
+    threat_engine: ThreatEngine,
 ) {
     info!(
         "Connection: PID={}, Port={}, Family={}, CGroup={}",
@@ -121,6 +130,15 @@ pub(crate) async fn handle_event(
         info!("  Process: {}", name);
     }
 
+    let (is_threat, threat_source) = if let Some((is_threat, source)) =
+        threat_engine.check_threat(&ip, domain_name.as_deref())
+    {
+        warn!("  !!! THREAT DETECTED !!! Source: {}", source);
+        (Some(is_threat), Some(source))
+    } else {
+        (Some(false), None)
+    };
+
     let event_data = storage::EventData {
         event_type: "tcp_connect".to_string(),
         protocol: "tcp".to_string(),
@@ -134,6 +152,8 @@ pub(crate) async fn handle_event(
         domain_name,
         process_name,
         process_cmdline,
+        is_threat,
+        threat_source,
     };
 
     let _ = storage::insert_event(&pool, &event_data).await;

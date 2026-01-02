@@ -8,7 +8,7 @@ mod monitor;
 mod storage;
 mod utils;
 
-use monitor::{DnsCache, DockerCache};
+use monitor::{DnsCache, DockerCache, ThreatEngine};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -25,6 +25,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     disable_dns_mon: bool,
 
+    /// Disable Threat Feeds
+    #[arg(long, default_value_t = false)]
+    disable_threat_feeds: bool,
+
     /// Path to the sqlite DB file. Default is lanthorn.db
     #[arg(long, default_value = "lanthorn.db")]
     db_path: String,
@@ -37,6 +41,19 @@ async fn main() -> Result<(), anyhow::Error> {
     info!("Starting initialisation");
 
     let pool = storage::init(&args.db_path).await?;
+
+    // Initialise Threat Engine
+    let threat_engine = ThreatEngine::new(pool.clone());
+    if !args.disable_threat_feeds {
+        info!("Fetching threat feeds...");
+        if let Err(e) = threat_engine.fetch_feeds().await {
+            error!("Failed to fetch threat feeds: {}", e);
+            error!("Please relaunch with --disable-threat-feeds to skip this check.");
+            return Err(e);
+        }
+    } else {
+        info!("Threat feeds disabled. Skipping cache load.");
+    }
 
     // Create shared caches
     let docker_cache: DockerCache = Arc::new(RwLock::new(HashMap::new()));
@@ -72,10 +89,16 @@ async fn main() -> Result<(), anyhow::Error> {
         let pool_clone = pool.clone();
         let docker_cache_clone = Arc::clone(&docker_cache);
         let dns_cache_clone = Arc::clone(&dns_cache);
+        let threat_engine_clone = threat_engine.clone();
 
         tokio::spawn(async move {
-            if let Err(e) =
-                monitor::run_tcp_monitor(pool_clone, docker_cache_clone, dns_cache_clone).await
+            if let Err(e) = monitor::run_tcp_monitor(
+                pool_clone,
+                docker_cache_clone,
+                dns_cache_clone,
+                threat_engine_clone,
+            )
+            .await
             {
                 error!("TCP Monitor failed: {}", e);
             };

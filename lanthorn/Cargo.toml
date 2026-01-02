@@ -26,6 +26,8 @@ clap = { workspace = true, features = ["derive", "help"] }
 bollard = "*"
 futures = "0.3"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+reqwest = { version = "0.13.1", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
 [build-dependencies]
 anyhow = { workspace = true }
 aya-build = { workspace = true }

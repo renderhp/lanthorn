@@ -1,5 +1,6 @@
 use super::dns::handle_dns_event;
 use super::ebpf::handle_event;
+use crate::monitor::ThreatEngine;
 use crate::monitor::dns_cache::DnsCache;
 use crate::monitor::docker::{DockerCache, MonitoredContainer};
 use lanthorn_common::{ConnectEvent, DnsEvent};
@@ -8,17 +9,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-async fn setup_env() -> (SqlitePool, DnsCache, DockerCache) {
+async fn setup_env() -> (SqlitePool, DnsCache, DockerCache, ThreatEngine) {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
     let dns_cache = Arc::new(RwLock::new(HashMap::new()));
     let docker_cache = Arc::new(RwLock::new(HashMap::new()));
-    (pool, dns_cache, docker_cache)
+    let threat_engine = ThreatEngine::new(pool.clone());
+    (pool, dns_cache, docker_cache, threat_engine)
 }
 
 #[tokio::test]
 async fn test_network_events_processing() {
-    let (pool, dns_cache, docker_cache) = setup_env().await;
+    let (pool, dns_cache, docker_cache, threat_engine) = setup_env().await;
 
     // 1. Pre-fill Docker cache with a known container
     let container_id = "container_123";
@@ -97,6 +99,7 @@ async fn test_network_events_processing() {
         connect_event,
         docker_cache.clone(),
         dns_cache.clone(),
+        threat_engine.clone(),
     )
     .await;
 
@@ -111,4 +114,127 @@ async fn test_network_events_processing() {
     assert_eq!(event_row.get::<String, _>("container_name"), container_name);
     // Crucially, verify that the domain name was enriched from the DNS cache
     assert_eq!(event_row.get::<String, _>("domain_name"), domain_str);
+}
+
+#[tokio::test]
+async fn test_threat_detection() {
+    let (pool, dns_cache, docker_cache, threat_engine) = setup_env().await;
+
+    // 1. Seed Threat DB with a known malicious IP and Domain
+    let malicious_ip = "192.168.1.66";
+    let malicious_domain = "evil.com";
+    let malicious_domain_ip = "10.0.0.1";
+
+    sqlx::query("INSERT INTO threat_ip_feed (ip, source) VALUES (?, ?)")
+        .bind(malicious_ip)
+        .bind("Feodo Tracker")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO threat_domain_feed (domain, source) VALUES (?, ?)")
+        .bind(malicious_domain)
+        .bind("URLhaus")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Reload cache to pick up the manual inserts
+    threat_engine.load_cache().await.unwrap();
+
+    // 2. Simulate connection to Malicious IP
+    let mut ip_bytes = [0u8; 16];
+    // 192.168.1.66
+    ip_bytes[0] = 192;
+    ip_bytes[1] = 168;
+    ip_bytes[2] = 1;
+    ip_bytes[3] = 66;
+
+    let event_ip = ConnectEvent {
+        pid: 123,
+        cgroup_id: 1,
+        timestamp_ns: 1000,
+        ip: ip_bytes,
+        port: 80,
+        family: 2,
+    };
+
+    handle_event(
+        pool.clone(),
+        event_ip,
+        docker_cache.clone(),
+        dns_cache.clone(),
+        threat_engine.clone(),
+    )
+    .await;
+
+    // Verify IP threat detected
+    let row = sqlx::query("SELECT is_threat, threat_source FROM events WHERE dst_addr = ?")
+        .bind(malicious_ip)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    assert!(row.get::<bool, _>("is_threat"));
+    assert_eq!(row.get::<String, _>("threat_source"), "Feodo Tracker");
+
+    // 3. Simulate connection to Malicious Domain
+    // First, populate DNS cache
+    let mut ip_domain_bytes = [0u8; 16];
+    ip_domain_bytes[0] = 10;
+    ip_domain_bytes[3] = 1;
+
+    // We need to put it in the cache manually since we are skipping handle_dns_event for brevity
+    // or we can simulate it properly. Let's simulate properly.
+    let mut domain_bytes = [0u8; 128];
+    domain_bytes[..malicious_domain.len()].copy_from_slice(malicious_domain.as_bytes());
+
+    let dns_event = DnsEvent {
+        pid: 123,
+        cgroup_id: 1,
+        timestamp_ns: 2000,
+        domain: domain_bytes,
+        domain_len: malicious_domain.len() as u16,
+        family: 2,
+        resolved_ip: ip_domain_bytes,
+        success: 1,
+        _padding: [0],
+    };
+
+    handle_dns_event(
+        pool.clone(),
+        dns_event,
+        dns_cache.clone(),
+        docker_cache.clone(),
+    )
+    .await;
+
+    // Now connect to that IP
+    let event_domain = ConnectEvent {
+        pid: 123,
+        cgroup_id: 1,
+        timestamp_ns: 3000,
+        ip: ip_domain_bytes,
+        port: 443,
+        family: 2,
+    };
+
+    handle_event(
+        pool.clone(),
+        event_domain,
+        docker_cache.clone(),
+        dns_cache.clone(),
+        threat_engine.clone(),
+    )
+    .await;
+
+    // Verify Domain threat detected
+    let row = sqlx::query("SELECT is_threat, threat_source FROM events WHERE dst_addr = ?")
+        .bind(malicious_domain_ip)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    assert!(row.get::<bool, _>("is_threat"));
+    assert_eq!(row.get::<String, _>("threat_source"), "URLhaus");
 }
