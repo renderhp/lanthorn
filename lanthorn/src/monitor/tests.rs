@@ -1,13 +1,12 @@
-
+use super::dns::handle_dns_event;
+use super::ebpf::handle_event;
+use crate::monitor::dns_cache::DnsCache;
+use crate::monitor::docker::{DockerCache, MonitoredContainer};
+use lanthorn_common::{ConnectEvent, DnsEvent};
+use sqlx::{Row, SqlitePool};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use sqlx::{SqlitePool, Row};
-use lanthorn_common::{DnsEvent, ConnectEvent};
-use crate::monitor::dns_cache::DnsCache;
-use crate::monitor::docker::{DockerCache, MonitoredContainer};
-use super::dns::handle_dns_event;
-use super::ebpf::handle_event;
 
 async fn setup_env() -> (SqlitePool, DnsCache, DockerCache) {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -46,7 +45,10 @@ async fn test_network_events_processing() {
 
     let mut resolved_ip = [0u8; 16];
     // manually parse 1.2.3.4
-    resolved_ip[0] = 1; resolved_ip[1] = 2; resolved_ip[2] = 3; resolved_ip[3] = 4;
+    resolved_ip[0] = 1;
+    resolved_ip[1] = 2;
+    resolved_ip[2] = 3;
+    resolved_ip[3] = 4;
 
     let dns_event = DnsEvent {
         pid: container_pid as u32,
@@ -61,7 +63,13 @@ async fn test_network_events_processing() {
     };
 
     // Process DNS event
-    handle_dns_event(pool.clone(), dns_event, dns_cache.clone(), docker_cache.clone()).await;
+    handle_dns_event(
+        pool.clone(),
+        dns_event,
+        dns_cache.clone(),
+        docker_cache.clone(),
+    )
+    .await;
 
     // 3. Verify DNS event in DB
     let dns_row = sqlx::query("SELECT * FROM dns_events WHERE domain = ?")
@@ -84,7 +92,13 @@ async fn test_network_events_processing() {
     };
 
     // Process Connect event
-    handle_event(pool.clone(), connect_event, docker_cache.clone(), dns_cache.clone()).await;
+    handle_event(
+        pool.clone(),
+        connect_event,
+        docker_cache.clone(),
+        dns_cache.clone(),
+    )
+    .await;
 
     // 5. Verify Connect event in DB and check enrichment
     let event_row = sqlx::query("SELECT * FROM events WHERE dst_addr = ? AND dst_port = ?")
