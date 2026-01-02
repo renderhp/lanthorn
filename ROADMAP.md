@@ -24,32 +24,28 @@ Enhance captured data with actionable context.
 
 - [x] Capture process name from `/proc/{pid}/comm`
 - [x] Capture process command line from `/proc/{pid}/cmdline`
-- [ ] Integrate MaxMind GeoLite2 for IP-to-country lookup
-- [ ] Fetch threat feeds on startup (abuse.ch URLhaus + Feodo Tracker)
-- [ ] Match connections against threat feeds
-- [ ] Update database schema:
+- [x] Fetch threat feeds on startup (abuse.ch URLhaus + Feodo Tracker)
+- [x] Match connections against threat feeds
+- [x] Update database schema:
   - [x] `process_name` - executable name
   - [x] `process_cmdline` - full command line
-  - [ ] `country` - 2-letter country code
-  - [ ] `is_threat` - boolean flag
-  - [ ] `threat_source` - which feed matched
+  - [x] `is_threat` - boolean flag
+  - [x] `threat_source` - which feed matched
 
 ### Phase 2: Data Lifecycle
 
 Manage storage with retention and aggregation.
 
-- [ ] Aggregated connections table schema:
+- [x] Aggregated connections table schema:
   - destination (IP/domain)
   - container
   - port
   - connection_count
-  - bytes_transferred (if feasible)
   - first_seen
   - last_seen
-- [ ] Background compaction job (runs periodically)
-- [ ] Configurable retention period (default: 3 days for full logs)
-- [ ] Cleanup job for expired detailed logs
-- [ ] Preserve aggregated data indefinitely
+- [x] Inline aggregation (update aggregates on each event)
+- [x] Configurable retention period (default: 3 days for full logs)
+- [x] Cleanup job for expired detailed logs
 
 ### Phase 3: API Layer
 
@@ -126,6 +122,18 @@ React-based embedded UI.
 ## Post-v0.1 Roadmap
 
 Features planned for future releases, roughly ordered by priority.
+
+### GeoIP Enrichment
+
+- Integrate MaxMind GeoLite2 for IP-to-country lookup
+- Add `country` column to database schema (2-letter country code)
+- Display country information in web dashboard
+
+### Performance Optimization
+
+- Optimize event logging throughput
+- Improve aggregation update performance
+- Batch database writes where beneficial
 
 ### Container-to-Container Traffic
 

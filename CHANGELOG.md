@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker container correlation using cgroup IDs and container metadata
 - Process enrichment capturing process name and command line for each connection
 - Threat feed integration with Feodo Tracker (malicious IPs) and URLhaus (malicious domains)
+- Connection aggregation table for summarized metrics (destination, container, port, connection count, first/last seen)
+- Data retention with configurable cleanup (`--retention-days` flag, default 3 days)
 - SQLite database storage with migration support
 - CLI with flags to disable individual monitors (`--disable-tcp-mon`, `--disable-dns-mon`, `--disable-docker-mon`, `--disable-threat-feeds`)
 - Custom database path via `--db-path` flag
