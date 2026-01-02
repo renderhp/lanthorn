@@ -14,6 +14,8 @@ pub struct EventData {
     pub domain_name: Option<String>,
     pub process_name: Option<String>,
     pub process_cmdline: Option<String>,
+    pub is_threat: Option<bool>,
+    pub threat_source: Option<String>,
 }
 
 pub async fn init(path: &str) -> Result<SqlitePool, sqlx::Error> {
@@ -26,8 +28,8 @@ pub async fn init(path: &str) -> Result<SqlitePool, sqlx::Error> {
 
 pub async fn insert_event(pool: &SqlitePool, event: &EventData) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO events (event_type, protocol, dst_addr, dst_port, pid, cgroup_id, container_id, container_name, image_name, domain_name, process_name, process_cmdline)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO events (event_type, protocol, dst_addr, dst_port, pid, cgroup_id, container_id, container_name, image_name, domain_name, process_name, process_cmdline, is_threat, threat_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(&event.event_type)
     .bind(&event.protocol)
@@ -41,6 +43,8 @@ pub async fn insert_event(pool: &SqlitePool, event: &EventData) -> Result<(), sq
     .bind(&event.domain_name)
     .bind(&event.process_name)
     .bind(&event.process_cmdline)
+    .bind(event.is_threat)
+    .bind(&event.threat_source)
     .execute(pool)
     .await?;
 
