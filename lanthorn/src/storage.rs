@@ -78,3 +78,31 @@ pub async fn insert_dns_event(
 
     Ok(())
 }
+
+/// Deletes events older than the specified number of days from both events and dns_events tables.
+/// Returns the total number of deleted rows.
+pub async fn delete_old_events(pool: &SqlitePool, retention_days: u64) -> Result<u64, sqlx::Error> {
+    let cutoff = format!("-{} days", retention_days);
+
+    let events_result = sqlx::query("DELETE FROM events WHERE timestamp < datetime('now', ?)")
+        .bind(&cutoff)
+        .execute(pool)
+        .await?;
+
+    let dns_result = sqlx::query("DELETE FROM dns_events WHERE timestamp < datetime('now', ?)")
+        .bind(&cutoff)
+        .execute(pool)
+        .await?;
+
+    let total_deleted = events_result.rows_affected() + dns_result.rows_affected();
+    if total_deleted > 0 {
+        info!(
+            "Retention cleanup: deleted {} events, {} dns_events (older than {} days)",
+            events_result.rows_affected(),
+            dns_result.rows_affected(),
+            retention_days
+        );
+    }
+
+    Ok(total_deleted)
+}

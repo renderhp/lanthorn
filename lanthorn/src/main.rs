@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use clap::Parser;
 use log::{error, info};
@@ -32,6 +32,11 @@ struct Args {
     /// Path to the sqlite DB file. Default is lanthorn.db
     #[arg(long, default_value = "lanthorn.db")]
     db_path: String,
+
+    /// Data retention period in days. Events older than this will be deleted.
+    /// Set to 0 to disable retention (keep events forever). Default is 3 days.
+    #[arg(long, default_value_t = 3)]
+    retention_days: u64,
 }
 
 #[tokio::main]
@@ -41,6 +46,20 @@ async fn main() -> Result<(), anyhow::Error> {
     info!("Starting initialisation");
 
     let pool = storage::init(&args.db_path).await?;
+
+    // Run data retention cleanup on startup
+    let retention_days = args.retention_days;
+    if retention_days > 0 {
+        info!(
+            "Running data retention cleanup (retention: {} days)...",
+            retention_days
+        );
+        if let Err(e) = storage::delete_old_events(&pool, retention_days).await {
+            error!("Failed to run retention cleanup: {}", e);
+        }
+    } else {
+        info!("Data retention disabled (keeping events forever)");
+    }
 
     // Initialise Threat Engine
     let threat_engine = ThreatEngine::new(pool.clone());
@@ -102,6 +121,20 @@ async fn main() -> Result<(), anyhow::Error> {
             {
                 error!("TCP Monitor failed: {}", e);
             };
+        });
+    }
+
+    // Start periodic retention cleanup task (runs every hour)
+    if retention_days > 0 {
+        let pool_clone = pool.clone();
+        tokio::spawn(async move {
+            let cleanup_interval = Duration::from_secs(60 * 60); // 1 hour
+            loop {
+                tokio::time::sleep(cleanup_interval).await;
+                if let Err(e) = storage::delete_old_events(&pool_clone, retention_days).await {
+                    error!("Periodic retention cleanup failed: {}", e);
+                }
+            }
         });
     }
 
