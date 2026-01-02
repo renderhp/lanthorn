@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
-use log::{error, info, warn};
+use log::{error, info};
 use tokio::sync::RwLock;
 
 mod monitor;
@@ -52,21 +52,7 @@ async fn main() -> Result<(), anyhow::Error> {
             return Err(e);
         }
     } else {
-        info!("Threat feeds disabled, loading existing cache if any...");
-        // Even if disabled, we should try to load what we have in DB
-        // But if disabled typically means "don't use it", maybe we skip loading too?
-        // The prompt said: "no updates for now, but design it with updates in mind... application should fail to start unless a flag to disable threat feeds is provided"
-        // It implies if I disable it, I probably don't care about threats.
-        // However, if I have old data, might as well use it?
-        // Let's load cache regardless if we can, but only fetch if enabled.
-        // Actually, if disabled, maybe we shouldn't even check?
-        // Let's stick to: fetch if enabled. If fetch fails, die.
-        // If disabled, just don't fetch.
-        // But we still need the engine for the monitor.
-        // Let's load cache.
-        if let Err(e) = threat_engine.load_cache().await {
-            warn!("Failed to load threat cache: {}", e);
-        }
+        info!("Threat feeds disabled. Skipping cache load.");
     }
 
     // Create shared caches
