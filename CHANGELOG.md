@@ -21,7 +21,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI workflow with automated build, lint, and test checks
 - Nightly build workflow with cross-compilation for x86_64 and aarch64 Linux
 
-### Changed
-
-- DNS monitoring uses retprobe instead of return address guessing for reliability
-- Consolidated database migrations into single init file
